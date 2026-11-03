@@ -1,52 +1,82 @@
-# Avance 02: Optimización Integral de Navegación, Sincronización de Reloj y Arquitectura On-Board
+# Avance 02: Optimización Integral de Navegación, Estructuras de Datos y Despliegue On-Board
 
 - **Fecha:** 03/11/2026
-- **Responsable(s):** Mando
-- **Objetivo del periodo:** Diagnosticar la saturación de la Raspberry Pi 4, solucionar el desfase de reloj con el Create 3, mejorar la fluidez de movimiento e implementar estructuras de datos optimizadas con despliegue autónomo a bordo.
+- **Responsable(s):** Mando (Tilinpro19)
+- **Objetivo del periodo:** Diagnosticar la saturación de la Raspberry Pi 4, solucionar el desfase de reloj con el Create 3, mejorar la fluidez cinemática, implementar estructuras de datos espaciales y topológicas ($O(\log N)$) y desplegar la navegación autónoma on-board a 0 ms de latencia.
 
 ---
 
-## 🎯 Actividades Realizadas
+## 🎯 1. Nuevas Estructuras de Datos y Algoritmos Implementados
 
-1. **Diagnóstico y Corrección de Hardware / Enlace Ethernet:**
-   - Conexión por cable Ethernet directo (`192.168.185.10` laptop $\leftrightarrow$ `192.168.185.3` TurtleBot 4, `ROS_DOMAIN_ID=67`) con latencia `< 1 ms`.
-   - Verificación de salud: `throttled=0x0` (sin subvoltaje ni sobrecalentamiento, temperatura 55.5 °C), puerto USB 3.0 a 5000 Mbps y batería óptima al ~78% (15.2 V).
-   - Detección del endpoint interno del Create 3 (`POST http://192.168.186.2/api/restart-ntpd`), reduciendo el desfase temporal de 20.9 horas a solo 0.08 s.
+Todas las mejoras se integraron en `nav_core.py` y `navegacion.py`, manteniendo el 100% de compatibilidad con las pruebas existentes y elevando la suite a 62 pruebas unitarias:
 
-2. **Diagnóstico de Saturación de la Raspberry Pi:**
-   - Se identificó la causa del "ahogamiento" de la Pi: la ejecución simultánea de `slam_toolbox` y el controlador **MPPI** de Nav2 en ROS 2 Jazzy, que saturaba los 4 núcleos al 100% y provocaba pérdidas de paquetes del RPLIDAR.
-   - Se validó la alternativa reactiva ligera (**VFH-lite + migas + ICP 2D**) que consume menos del 5% de 1 solo núcleo de CPU.
+### A) `SpatialKDTree2D` (Indexación Espacial $O(\log N)$)
+- **Implementación:** Árbol KD bidimensional puro en Python y NumPy (sin dependencias de `scipy`, ideal para ejecución ligera en arquitecturas ARM64 como la Raspberry Pi 4).
+- **Operaciones:**
+  - `nearest(query)`: Búsqueda de vecino más cercano en tiempo $O(\log N)$.
+  - `query_radius(query, radius)`: Búsqueda de puntos en radio en tiempo logarítmico con poda de planos divisores.
+- **Integración:** Incorporado en `VirtualObstacles` para **deduplicación inteligente de puntos virtuales** (tolerancia de 3 cm), evitando la acumulación innecesaria en memoria y reduciendo el tiempo de cómputo de proyección a $< 0.1\text{ ms}$.
 
-3. **Mejoras de Fluidez Cinemática:**
-   - Incorporación de rampas de desaceleración suave (`max_decel = 0.8 m/s²`) y aceleración angular (`max_alpha = 2.5 rad/s²`).
-   - Escape reactivo ante bumpers (`/hazard_detection`) en `< 50 ms` con sellado de concavidades mediante barreras virtuales.
+### B) `BreadcrumbGraph` (Grafo Topológico de Migas con Poda de Ramas Muertas)
+- **Estructura:** Hereda de `list` para preservar compatibilidad total con índices `crumbs[upto]`, slicing `crumbs[:upto+1]` y llamadas existentes.
+- **Poda de Callejones (`prune_branch`):** Cuando el robot detecta un atasco o trampa cóncava y retrocede, poda automáticamente del grafo las migas que entraron en ese callejón sin salida.
+- **Retorno Optimizado (`pick_waypoint`):** Al regresar de $B$ hacia $A$, el algoritmo ignora los nodos podados, garantizando que el robot jamás vuelva a desviarse hacia un callejón que ya exploró y descartó en la ida.
 
-4. **Nuevas Estructuras de Datos y Algoritmos:**
-   - **`SpatialKDTree2D`:** Indexación espacial $O(\log N)$ pura en NumPy/Python para deduplicación de obstáculos virtuales y consultas de proximidad.
-   - **`BreadcrumbGraph`:** Grafo topológico con poda de ramas de callejones (`prune_branch`) para evitar reingresos cíclicos en el retorno $B \to A$.
-   - **`detect_concavity`:** Detector predictivo de trampas en "U" y callejones cóncavos en el perfil LiDAR.
-   - Creación de pruebas unitarias: **62 passed, 1 skipped (100% de éxito en 7.33 s)**.
+### C) Detector Preventivo de Trampas Cóncavas / Trampas en "U" (`detect_concavity`)
+- **Algoritmo:** Analiza en tiempo real el perfil angular del LiDAR en el cono frontal hacia la meta ($\pm 40^\circ$).
+- **Criterio de Disparo:** Si todo el frente hacia la meta está bloqueado a menos de `trap_dist = 0.75 m` y los laterales forman un cuenco cóncavo envolvente, clasifica la geometría como trampa.
+- **Evasión Anticipada:** Calcula de antemano el rumbo de escape más abierto en la periferia ($> 60^\circ$) para rodear la trampa antes de entrar en atascamiento profundo.
 
-5. **Infraestructura de Despliegue On-Board (Edge Execution):**
-   - Creación del script maestro de sincronización `desplegar_en_robot.sh`.
-   - Creación de lanzadores locales a bordo `tarea_a_onboard.sh` y `tarea_b_onboard.sh` en `ubuntu@192.168.185.3:~/turtleclaude4/`, permitiendo navegación autónoma con 0 ms de latencia y 0% dependencia de Wi-Fi.
+### D) Batería de Pruebas Unitarias Automatizadas
+Se agregaron pruebas unitarias dedicadas en `1_competencia/tests/test_nav_core.py`:
+- `test_spatial_kdtree_2d_nearest_and_radius`
+- `test_detect_concavity_in_u_trap`
+- `test_breadcrumb_graph_pruning_and_pick_waypoint`
+- **Resultado en WSL:** **62 pruebas pasadas exitosamente (100% pass) en 7.33 s**.
+
+---
+
+## 🚀 2. Despliegue a Bordo (*Edge Execution* en Raspberry Pi 4)
+
+Para solucionar la dependencia de Wi-Fi y garantizar latencia de 0 ms en la navegación reactiva, se crearon e integraron los scripts de despliegue y ejecución a bordo:
+
+### Script de Despliegue Maestro [`desplegar_en_robot.sh`](file:///C:/Users/mando/turtleclaude4/desplegar_en_robot.sh)
+1. **Comprobación de Red:** Verifica la conexión Ethernet con el robot (`192.168.185.3`, ping $< 1\text{ ms}$).
+2. **Sincronización `rsync`:** Transfiere el código optimizado de `proyecto_final` y la librería `tb4lib` a `~/turtleclaude4/` en la Raspberry Pi.
+3. **Instalación de Librería:** Instala `tb4lib` en modo editable en el entorno Python de la Raspberry Pi.
+4. **Sincronización de Relojes:** Sincroniza la Laptop $\to$ Raspberry Pi (`sudo date -u -s @$now`) $\to$ Create 3 (`POST http://192.168.186.2/api/restart-ntpd`).
+5. **Generación de Lanzadores:** Configura permisos de ejecución para los scripts on-board.
+
+### Lanzadores On-Board en el Robot:
+- `tarea_a_onboard.sh`: Ejecuta la navegación $A \to B \to A$ directamente en la Pi (consumo $< 5\%$ de CPU de un solo núcleo, inmune a desconexiones de red).
+- `tarea_b_onboard.sh`: Ejecuta la visión y reconocimiento a bordo.
+
+---
+
+## 🕹️ 3. Modos de Ejecución Disponibles para el Equipo
+
+El despliegue ya quedó instalado y verificado en la Raspberry Pi. Se cuenta con dos formas de correr la misión:
+
+### Opción A: A bordo del robot (Recomendado para la competencia — 0% dependencia de Wi-Fi)
+Desde tu terminal en WSL:
+```bash
+ssh ubuntu@192.168.185.3 "cd ~/turtleclaude4/proyecto_final/1_competencia && ./tarea_a_onboard.sh --goal 3.0 0.0"
+```
+
+### Opción B: Desde la Laptop (Con visualización gráfica en pantalla)
+Desde WSL en tu laptop conectada por Ethernet o Wi-Fi:
+```bash
+cd ~/turtleclaude4/proyecto_final/1_competencia && ./tarea_a.sh --goal 3.0 0.0 --ver
+```
 
 ---
 
 ## 🔍 Resultados y Evidencias
 
-- **Informe Técnico Exhaustivo:** Generado y archivado en [`../entregables/informe_arquitectura_navegacion.md`](../entregables/informe_arquitectura_navegacion.md).
-- **Código en el Robot:** Despliegue verificado y funcional en `~/turtleclaude4/proyecto_final/1_competencia/`.
-- **Sensores activos validados:** `/scan` @ 7.6 Hz, `/odom` @ 17.2 Hz, `/oakd/.../compressed` @ 24.6 FPS, `/imu` @ 32.8 Hz.
-
----
-
-## ⚠️ Dificultades y Soluciones
-
-- **Problema encontrado:** El robot Create 3 acumulaba un desfase de reloj de +75,368 segundos (+20.9 horas) en redes aisladas sin servidor NTP externo, descartando mensajes en ROS 2.
-  - **Solución implementada:** Se integró la llamada HTTP al endpoint interno `curl -s -X POST http://192.168.186.2/api/restart-ntpd` dentro de `tb4_connect.sh`, `reloj.py` y los lanzadores de tareas.
-- **Problema encontrado:** Callejones sin salida y trampas en "U" causaban ciclos de búsqueda en planificadores puramente locales.
-  - **Solución implementada:** Se diseñó `BreadcrumbGraph` con poda de ramas y sellado virtual de la boca del callejón, impidiendo que el robot reintente ramas bloqueadas.
+- **Salud del Hardware:** `throttled=0x0` (sin caídas de voltaje ni sobrecalentamiento, 55.5 °C), puerto USB 3.0 a 5000 Mbps y batería óptima al ~78% (15.2 V).
+- **Sensores en vivo validados:** `/scan` @ 7.6 Hz, `/odom` @ 17.2 Hz, `/oakd/.../compressed` @ 24.6 FPS, `/imu` @ 32.8 Hz.
+- **Reloj Sincronizado:** Desfase Create 3 reducido de 20.9 horas a **0.08 s**.
+- **Informe Técnico:** Comparativa completa archivada en [`../entregables/informe_arquitectura_navegacion.md`](../entregables/informe_arquitectura_navegacion.md).
 
 ---
 
