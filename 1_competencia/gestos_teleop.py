@@ -32,8 +32,8 @@ from comun import LIMIT_ANGULAR, LIMIT_LINEAR, Sender, clamp
 from mano_teleop import (HAND_BONES, PANEL_H, HandDetector, RobotCamera, fit_height,
                          open_camera, robot_panel)
 
-STABLE_FRAMES = 4      # frames seguidos con la misma pose antes de aceptarla
-THUMB_OPEN = 0.6       # pulgar estirado si |punta - base del indice| > 0.6 * tamano mano
+STABLE_FRAMES = 3      # frames seguidos con la misma pose antes de aceptarla
+THUMB_OPEN = 0.55      # pulgar estirado si |punta - base del indice| > 0.55 * tamano mano
 MIN_HAND_PX = 25       # mano mas chica (muneca -> base del medio) = muy lejos, no se confia
 ARM_HOLD = 1.0         # s con la palma para armar
 ACTION_HOLD = 1.5      # s con la V para la accion
@@ -52,6 +52,7 @@ POSES = {
 
 # (punta, articulacion media) de indice, medio, anular, menique
 FINGERS = [(8, 6), (12, 10), (16, 14), (20, 18)]
+MCP_JOINTS = [5, 9, 13, 17]
 
 
 def classify_pose(lm):
@@ -60,23 +61,37 @@ def classify_pose(lm):
     size = np.linalg.norm(lm[9] - wrist)  # muneca -> base del dedo medio
     if size < MIN_HAND_PX:
         return "nada"
-    # Un dedo esta doblado si su punta queda mas cerca de la muneca que su articulacion
-    folded = [np.linalg.norm(lm[tip] - wrist) < np.linalg.norm(lm[pip] - wrist)
-              for tip, pip in FINGERS]
+
+    # Evaluacion robusta de flexion de cada dedo (tolerancia angular y oclusion)
+    folded = []
+    for (tip, pip), mcp in zip(FINGERS, MCP_JOINTS):
+        d_tip_w = np.linalg.norm(lm[tip] - wrist)
+        d_pip_w = np.linalg.norm(lm[pip] - wrist)
+        d_tip_mcp = np.linalg.norm(lm[tip] - lm[mcp])
+        d_pip_mcp = np.linalg.norm(lm[pip] - lm[mcp])
+        folded.append(d_tip_w < d_pip_w * 1.15 or d_tip_mcp < d_pip_mcp * 1.30)
+
+    # Para puño / like / dislike: indice, medio y anular doblados (meñique flexible por oclusion)
+    all_folded = folded[0] and folded[1] and folded[2] and (folded[3] or sum(folded) >= 3)
+
+    # Analisis direccional del pulgar
+    dx, dy = lm[4] - lm[2]  # base (2) -> punta (4) del pulgar
+    thumb_up = (dy < -0.25 * size) and (lm[4][1] < lm[5][1]) and (abs(dy) > abs(dx) * 0.6)
+    thumb_down = (dy > 0.25 * size) and (lm[4][1] > lm[2][1]) and (abs(dy) > abs(dx) * 0.6)
     thumb_open = np.linalg.norm(lm[4] - lm[5]) >= THUMB_OPEN * size
 
-    if all(folded):
-        if not thumb_open:
-            return "puno"
-        # like / dislike segun hacia donde apunta el pulgar
-        dx, dy = lm[4] - lm[2]  # base -> punta del pulgar (y crece hacia abajo)
-        if abs(dy) > abs(dx):
-            return "like" if dy < 0 else "dislike"
+    if all_folded:
+        if thumb_up:
+            return "like"
+        if thumb_down:
+            return "dislike"
+        # Si los dedos estan doblados y el pulgar no apunta ni arriba ni abajo: es PUÑO
+        return "puno"
     elif not folded[0] and all(folded[1:]):
         # Pistola: indice estirado, apuntando de lado
-        dx, dy = lm[8] - lm[5]
-        if abs(dx) > abs(dy):
-            return "pistola_der" if dx > 0 else "pistola_izq"
+        p_dx, p_dy = lm[8] - lm[5]
+        if abs(p_dx) > abs(p_dy):
+            return "pistola_der" if p_dx > 0 else "pistola_izq"
     elif not folded[0] and not folded[1] and folded[2] and folded[3]:
         return "victoria"
     elif not any(folded) and thumb_open:
