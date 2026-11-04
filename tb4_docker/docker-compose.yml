@@ -1,0 +1,27 @@
+# Uso:  TB4_IP=192.168.0.104 ROS_DOMAIN_ID=67 docker compose run --rm tb4
+services:
+  tb4:
+    build: .
+    image: tb4:jazzy
+    network_mode: host        # imprescindible: DDS necesita la red real del host
+    ipc: host                 # Fast DDS usa memoria compartida
+    pid: host
+    privileged: true          # webcam (/dev/video*) y bumper/joystick sin pelear con permisos
+    stdin_open: true
+    tty: true
+    environment:
+      - TB4_IP=${TB4_IP:-192.168.0.104}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-67}
+      - TB4_MODE=${TB4_MODE:-auto}
+      - DISPLAY=${DISPLAY:-:0}
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}
+      - XDG_RUNTIME_DIR=/tmp/xdg
+      - PULSE_SERVER=${PULSE_SERVER:-}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - ../paquete_proyecto_final:/ws          # el codigo del proyecto
+      - ./tb4lib:/opt/tb4/tb4lib               # la libreria en modo editable
+      - /tmp/.X11-unix:/tmp/.X11-unix          # ventanas OpenCV / RViz / rqt
+      - ${XDG_RUNTIME_DIR:-/tmp}:/tmp/xdg
+      - /dev:/dev
+      - ${HOME}/.ssh:/root/.ssh:ro             # para tb4 reloj --sync

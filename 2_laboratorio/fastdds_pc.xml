@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Perfil Fast DDS para la PC (WSL / redes sin multicast).
+  Con ROS_STATIC_PEERS, Fast DDS solo contacta a los 4 primeros participantes
+  del robot (maxInitialPeersRange = 4 por defecto). El bringup del TB4 lanza
+  muchos procesos, asi que los nodos de /cmd_vel, /odom, /oakd... quedan fuera.
+  Uso: export FASTRTPS_DEFAULT_PROFILES_FILE=~/turtleclaude4/fastdds_pc.xml
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <profiles>
+        <transport_descriptors>
+            <transport_descriptor>
+                <transport_id>udp_peers</transport_id>
+                <type>UDPv4</type>
+                <maxInitialPeersRange>100</maxInitialPeersRange>
+            </transport_descriptor>
+        </transport_descriptors>
+        <participant profile_name="pc_static_peers" is_default_profile="true">
+            <rtps>
+                <userTransports>
+                    <transport_id>udp_peers</transport_id>
+                </userTransports>
+                <useBuiltinTransports>false</useBuiltinTransports>
+            </rtps>
+        </participant>
+    </profiles>
+</dds>

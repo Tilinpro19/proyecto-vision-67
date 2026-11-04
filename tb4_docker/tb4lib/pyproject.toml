@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tb4"
+version = "0.1.0"
+description = "Libreria unica para hablar con el TurtleBot 4 Lite (ROS 2 Jazzy) desde la PC"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.scripts]
+tb4 = "tb4.cli:main"
+
+[tool.setuptools]
+packages = ["tb4"]

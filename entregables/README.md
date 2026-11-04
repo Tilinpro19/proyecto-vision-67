@@ -16,6 +16,15 @@ En este directorio se compilan los reportes técnicos, especificaciones y docume
   - Implementación de estructuras de datos optimizadas (`SpatialKDTree2D`, `BreadcrumbGraph`).
   - Guía de despliegue a bordo (*Edge Execution*) con 0 ms de latencia.
 
+### 2. [Informe de Estado y Madurez al 70%](informe_estado_proyecto_70.md)
+- **Tipo:** Reporte Formal de Estado y Roadmap de Pruebas.
+- **Fecha:** 04/11/2026.
+- **Contenido:**
+  - Diagnóstico exhaustivo del avance global (fijado estrictamente en 70%).
+  - Mapeo de la Tarea A ($A \to B \to \text{Escaneo} \to B \to A \to \text{Anuncio}$) y Tarea B (MediaPipe + Guardián LiDAR).
+  - Estrategia defensiva "Cero Colisiones" (inflado $R=26\text{ cm}$, rotación pura en frente $<32\text{ cm}$, desaceleración suave y bumper).
+  - Cobertura de pruebas unitarias (62 pass / 1 skip) y plan para el 30% restante de pruebas en pista física.
+
 ---
 
 ## 📂 Próximos Entregables del Calendario
