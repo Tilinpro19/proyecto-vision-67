@@ -78,7 +78,10 @@ class Sender:
             body = msg.twist
         body.linear.x = float(linear)
         body.angular.z = float(angular)
-        self.pub.publish(msg)
+        try:
+            self.pub.publish(msg)
+        except Exception:
+            pass
 
     def stop(self):
         # Ctrl+C: rclpy ya cerro el contexto y publicar lanzaria RCLError

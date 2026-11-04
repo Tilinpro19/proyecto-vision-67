@@ -177,21 +177,22 @@ class Gestos:
 def front_limit(linear, lidar, nav):
     """Frena el avance o retroceso segun la holgura con obstaculos medida por el LiDAR."""
     if linear == 0.0 or lidar is None:
-        return linear
+        return linear, ""
     import math
     import nav_core as nc
     if not lidar.fresh():
-        return 0.0
+        return 0.0, "[ESPERANDO LIDAR]"
     if linear > 0:
         free = float(nc.free_distance(*lidar.data, 0.0, nav)[0])
-        return nc.speed_command(0.0, free, linear, 0.0, nav)[0]
+        cmd = float(nc.speed_command(0.0, free, linear, 0.0, nav)[0])
+        if cmd == 0.0:
+            return 0.0, f"[FRENO: libre {free:.2f}m]"
+        return cmd, ""
     else:
-        # Retroceso seguro con dislike: verificar despeje trasero (rumbo pi / 180 deg)
         back_free = float(nc.free_distance(*lidar.data, math.pi, nav)[0])
         if back_free < nav.stop_dist:
-            return 0.0
-        # Velocidad de retroceso suave y controlada (max -0.12 m/s)
-        return float(max(linear, -0.12))
+            return 0.0, f"[FRENO ATRAS: libre {back_free:.2f}m]"
+        return float(max(linear, -0.12)), ""
 
 
 def draw_hud(frame, pose, ctrl, t, linear, angular, extra=""):
@@ -236,6 +237,17 @@ def main():
         import rclpy
         rclpy.init()
         node = rclpy.create_node("gestos_teleop")
+        # Despertar motor del LiDAR y camara en caso esten en reposo
+        try:
+            from std_srvs.srv import Empty, Trigger
+            cli_lidar = node.create_client(Empty, "/start_motor")
+            if cli_lidar.wait_for_service(timeout_sec=0.5):
+                cli_lidar.call_async(Empty.Request())
+            cli_cam = node.create_client(Trigger, "/oakd/start_camera")
+            if cli_cam.wait_for_service(timeout_sec=0.5):
+                cli_cam.call_async(Trigger.Request())
+        except Exception:
+            pass
 
     win = "Gestos teleop TurtleBot 4"
     sender = gestos = None
@@ -265,7 +277,7 @@ def main():
             frame, direction, evento, pose = out
             if evento:
                 print(evento.upper())
-            linear = front_limit(direction[0] * max_l, lidar, nav)
+            linear, warn = front_limit(direction[0] * max_l, lidar, nav)
             angular = direction[1] * max_a
             if linear or angular:
                 sender.send(linear, angular)
@@ -274,7 +286,7 @@ def main():
                 sender.stop()
                 sent_moving = False
 
-            draw_hud(frame, pose, gestos.ctrl, t, linear, angular)
+            draw_hud(frame, pose, gestos.ctrl, t, linear, angular, extra=warn)
             cv2.imshow(win, np.hstack([fit_height(frame, PANEL_H), robot_panel(robot_cam)]))
             cv2.waitKey(1)  # necesario para refrescar la ventana; las teclas se ignoran
             try:

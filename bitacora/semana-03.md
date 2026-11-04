@@ -31,6 +31,11 @@
   - 🤟 `love_you`: Giro antihorario ($-0.5\text{ rad/s}$).
   - ✋ `open_palm` / Mano ausente: Detención inmediata ($0, 0$).
 
+### D) Calibración de Gestos y Modo de Seguimiento Dinámico ("Pokémon")
+- **Corrección Anatómica de Puño y Like:** Se rediseñó el clasificador de poses con holgura del 15% y discriminación estricta de la inclinación del pulgar, resolviendo la confusión entre puño cerrado (✊) y pulgar arriba (👍).
+- **HUD con Telemetría de Seguridad:** La ventana de video ahora muestra en tiempo real advertencias de seguridad (`[ESPERANDO LIDAR]`, `[FRENO: libre X.XXm]`), facilitando el diagnóstico visual.
+- **Modo Pokémon ("Sígueme"):** Se integró el modelo `pose_landmarker_lite.task` para seguimiento de entrenador en tiempo real, añadiendo el parámetro `--no-color` y tolerancia de agrupamiento LiDAR (`LEG_MIN_PTS=2`, `LEG_MAX_W=0.60 m`) para evitar pérdidas de rastreo por absorción o textura en prendas oscuras y jeans.
+
 ---
 
 ## 🔍 2. Resultados y Evidencias
