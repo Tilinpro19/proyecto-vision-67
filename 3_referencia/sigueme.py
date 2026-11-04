@@ -28,8 +28,12 @@ Teclas: espacio armar/pausar (ARRANCA EN PAUSA) | u/j vel. lineal +/- |
 import argparse
 import math
 import os
+import sys
 import threading
 import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "1_competencia"))
 
 import cv2
 import numpy as np
@@ -37,7 +41,6 @@ import numpy as np
 from comun import (LIMIT_ANGULAR, LIMIT_LINEAR, STEP_ANGULAR, STEP_LINEAR, Sender, clamp)
 from mano_teleop import PANEL_H, RobotCamera, fit_height
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 POSE_MODEL = os.path.join(HERE, "pose_landmarker_lite.task")
 # https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
 MIN_POSE_CONFIDENCE = 0.5
@@ -66,18 +69,17 @@ START_ANGULAR = 1.0    # rad/s
 LOOP_DT = 1 / 30       # s   periodo del bucle de control
 
 # Piernas en el LiDAR (el del TB4 corta a la altura de las espinillas)
-CLUSTER_GAP = 0.10     # m   salto entre puntos seguidos que separa dos objetos
-LEG_MIN_W = 0.05       # m   ancho minimo de una pierna (patas de silla finas quedan fuera)
-LEG_MAX_W = 0.45       # m   maximo (las dos piernas juntas se ven como un solo bulto)
-LEG_MIN_PTS = 3
-FAR_RANGE = 2.0        # m   mas lejos, el lidar da solo ~2 puntos por pierna: aceptar 2
-CONCAVE_MAX = 0.01     # m   si el centro del bulto queda mas lejos que sus bordes = esquina
-                       #     o respaldo, no pierna (una pierna es convexa hacia el robot)
-PAIR_DIST = 0.45       # m   dos piernas mas cerca que esto = una persona
-PEOPLE_RANGE = 3.0     # m   no buscar piernas mas lejos
-TRACK_GATE = 0.45      # m   cuanto puede moverse la persona entre dos scans
-TRACK_TIMEOUT = 0.6    # s   sin ver tus piernas -> te da por perdido
-CAM_FRESH = 0.5        # s   antiguedad maxima de la deteccion de camara
+CLUSTER_GAP = 0.12     # m   salto entre puntos seguidos que separa dos objetos
+LEG_MIN_W = 0.04       # m   ancho minimo de una pierna
+LEG_MAX_W = 0.60       # m   maximo (cubre jeans anchos y ambas piernas juntas)
+LEG_MIN_PTS = 2        # minimo de puntos (2 permite detectar jeans oscuros que absorben IR)
+FAR_RANGE = 2.0        # m   mas lejos, el lidar da solo ~2 puntos por pierna
+CONCAVE_MAX = 0.02     # m   tolerancia de curvatura
+PAIR_DIST = 0.55       # m   dos piernas mas cerca que esto = una persona
+PEOPLE_RANGE = 3.5     # m   rango de busqueda
+TRACK_GATE = 0.55      # m   cuanto puede moverse la persona entre dos scans
+TRACK_TIMEOUT = 1.0    # s   sin ver tus piernas -> te da por perdido
+CAM_FRESH = 0.6        # s   antiguedad maxima de la deteccion de camara
 
 # Muebles: bultos quietos respecto al suelo (con /odom)
 STATIC_CELL = 0.15     # m   tamano de celda
@@ -86,13 +88,13 @@ STATIC_FORGET = 2.0    # s   celda a la vista y vacia este tiempo -> se olvida (
 
 # Color de la ropa (parche de piernas en la imagen, donde el lidar dice que estas)
 CAM_HEIGHT = 0.20      # m   altura aprox. de la camara del TB4 Lite (medir si falla)
-PANTS_Z = (0.15, 0.60) # m   alturas del parche (espinilla a muslo)
-PANTS_HALF_W = 0.10    # m   medio ancho del parche
-COLOR_MATCH = 0.40     # distancia Bhattacharyya: por debajo = misma ropa
-COLOR_REJECT = 0.65    # por encima durante COLOR_REJECT_TIME -> no eres tu, soltar
-COLOR_REJECT_TIME = 1.0
-COLOR_LEARN = 0.05     # cuanto se actualiza el color de referencia (cambios de luz)
-REACQ_RANGE = 2.0      # m   re-enganche solo por color hasta esta distancia
+PANTS_Z = (0.15, 0.65) # m   alturas del parche (espinilla a muslo)
+PANTS_HALF_W = 0.14    # m   medio ancho del parche (mas generoso para jeans)
+COLOR_MATCH = 0.60     # distancia Bhattacharyya relajada (acepta textura de jean y sombras)
+COLOR_REJECT = 0.85    # umbral alto para no soltar falsamente por arrugas de mezclilla
+COLOR_REJECT_TIME = 2.5 # s para no soltar por variacion momentanea de luz
+COLOR_LEARN = 0.08     # cuanto se actualiza el color de referencia (cambios de luz)
+REACQ_RANGE = 2.5      # m   re-enganche solo por color hasta esta distancia
 
 TORSO = (11, 12, 23, 24)  # hombros y caderas
 SKELETON = [(11, 12), (11, 23), (12, 24), (23, 24), (11, 13), (13, 15), (12, 14), (14, 16),
@@ -550,11 +552,25 @@ def main():
                     help="campo de vision horizontal de la imagen (grados). El preview 250x250 "
                          "del TB4 recorta el centro: ~37 (medido en el lab: 36), no los 69 del sensor")
     ap.add_argument("--dist", type=float, default=FOLLOW_DIST, help="distancia de seguimiento (m)")
+    ap.add_argument("--no-color", action="store_true",
+                    help="no filtrar por color de ropa (ideal para jeans o ropa con textura)")
     args = ap.parse_args()
 
     import rclpy
     rclpy.init()
     node = rclpy.create_node("sigueme")
+
+    # Despertar LiDAR y OAK-D Lite si estan en reposo
+    try:
+        from std_srvs.srv import Empty, Trigger
+        cli_lidar = node.create_client(Empty, "/start_motor")
+        if cli_lidar.wait_for_service(timeout_sec=0.5):
+            cli_lidar.call_async(Empty.Request())
+        cli_cam = node.create_client(Trigger, "/oakd/start_camera")
+        if cli_cam.wait_for_service(timeout_sec=0.5):
+            cli_cam.call_async(Trigger.Request())
+    except Exception:
+        pass
 
     win = "Sigueme TurtleBot 4"
     sender = detector = executor = spin_thread = None
@@ -638,7 +654,7 @@ def main():
             cam_boxes = ([((0.5 - b[0] / img_w) * hfov - turn, (0.5 - b[2] / img_w) * hfov - turn)
                           for b in boxes] if cam_fresh else None)
             img_ok = img is not None and now - cam.last_t < CAM_FRESH
-            color_dist = (lambda p: look.dist(img, p)) if img_ok and look.ref is not None else None
+            color_dist = (lambda p: look.dist(img, p)) if (not args.no_color and img_ok and look.ref is not None) else None
             if not odom.ready() and not odom_warned and now - lidar.last_t < 1.0:
                 odom_warned = True
                 print(f"Aviso: no llega {args.odom}; sin filtro de muebles quietos")
@@ -646,7 +662,7 @@ def main():
 
             # color de la ropa: aprender al engancharte, soltar si deja de parecerse
             color = None
-            if target is not None and new_img:
+            if not args.no_color and target is not None and new_img:
                 color = look.dist(img, target)
                 if look.ref is None or (color is not None and color < COLOR_MATCH):
                     look.learn(img, target, 1.0 if look.ref is None else COLOR_LEARN)
