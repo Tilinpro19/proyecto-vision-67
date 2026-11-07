@@ -16,7 +16,7 @@ Comandos: `tb4 check | reloj | camara | lidar | teleop | mover V W SEG | avanzar
 Ventanas (camara/lidar): antes ejecutar `xhost +local:` en el host.
 
 `TB4_MODE`: `peers` (unicast, por defecto si hay TB4_IP) o `multicast`.
-El compose monta `../paquete_proyecto_final` en `/ws`; ajusta esa ruta si tu proyecto esta en otro sitio.
+El compose monta `la raíz del repositorio (..) con 1_competencia/` en `/ws`; ajusta esa ruta si tu proyecto esta en otro sitio.
 
 ## Libreria
 ```python
@@ -27,3 +27,15 @@ with Robot(camara=False) as bot:
     print(bot.pose, bot.lidar.distancia(0.0))
 ```
 `info/recolectar.sh` vuelca topicos, nodos, servicios, acciones, mensajes y parametros del robot.
+
+
+## Ejecutar Pruebas y Misión de Autonomía dentro de Docker
+Una vez dentro del contenedor (montado en /ws):
+`ash
+# 1. Correr los 62 tests unitarios:
+python3 -m pytest 1_competencia/tests -v
+
+# 2. Correr la navegación autónoma hacia B=(3.0, 0.5):
+cd 1_competencia
+./tarea_a.sh --goal 3.0 0.5
+`

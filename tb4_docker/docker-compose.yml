@@ -19,7 +19,7 @@ services:
       - PULSE_SERVER=${PULSE_SERVER:-}
       - QT_X11_NO_MITSHM=1
     volumes:
-      - ../paquete_proyecto_final:/ws          # el codigo del proyecto
+      - ..:/ws          # el codigo del proyecto
       - ./tb4lib:/opt/tb4/tb4lib               # la libreria en modo editable
       - /tmp/.X11-unix:/tmp/.X11-unix          # ventanas OpenCV / RViz / rqt
       - ${XDG_RUNTIME_DIR:-/tmp}:/tmp/xdg

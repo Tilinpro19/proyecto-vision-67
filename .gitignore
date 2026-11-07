@@ -21,3 +21,9 @@ Thumbs.db
 *.mkv
 *.bag
 *.db3
+
+# Legacy y notas
+SPOILER_carta_de_suicidio_turtlebot2025.txt
+_legacy/
+seguimiento_vision/
+.pytest_cache/
