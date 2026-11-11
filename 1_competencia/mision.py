@@ -48,11 +48,49 @@ class MisionParams:
     rate: float = 10.0            # Hz  ciclo de control
 
 
+def drenar(spin_once, periodo, reloj=time.monotonic):
+    """Un ciclo de control de 'periodo' s: atiende TODOS los callbacks que lleguen y vuelve
+    cuando termina el periodo. rclpy.spin_once atiende uno solo por llamada; sin esto el
+    control corria una vez por mensaje recibido (scan + odom + camara = decenas de veces
+    por segundo) en vez de a 'rate' Hz, y gastaba CPU de la Pi sin ganar nada."""
+    fin = reloj() + periodo
+    spin_once(periodo)
+    while True:
+        resto = fin - reloj()
+        if resto <= 0:
+            return
+        spin_once(resto)
+
+
+class Perfil:
+    """Cuanto cuesta la mision en la Pi: tiempo de cada ciclo de navegacion y CPU total del
+    proceso (en % de UN nucleo; la Pi 4 tiene 4, asi que 100 % = un nucleo entero)."""
+
+    def __init__(self, reloj=time.perf_counter, cpu=time.process_time):
+        self.reloj, self.cpu = reloj, cpu
+        self.t_ini, self.cpu_ini = reloj(), cpu()
+        self.ms = []
+
+    def registrar(self, t0):
+        """t0 = self.reloj() justo antes del calculo que se mide."""
+        self.ms.append((self.reloj() - t0) * 1000.0)
+
+    def resumen(self):
+        wall = self.reloj() - self.t_ini
+        ms = sorted(self.ms)
+        return dict(ciclos=len(ms),
+                    ciclo_ms_prom=round(sum(ms) / len(ms), 2) if ms else 0.0,
+                    ciclo_ms_p95=round(ms[min(int(len(ms) * 0.95), len(ms) - 1)], 2) if ms else 0.0,
+                    ciclo_ms_max=round(ms[-1], 2) if ms else 0.0,
+                    cpu_pct=round(100.0 * (self.cpu() - self.cpu_ini) / wall, 1) if wall > 0 else 0.0)
+
+
 class Mision:
     """Estado, cronometro y registro. Sin ROS."""
 
     def __init__(self, tarea, log_dir=None, clock=time.monotonic, quiet=False):
         self.tarea, self.clock, self.quiet = tarea, clock, quiet
+        self.perfil = Perfil()
         self.estado, self.t0, self.t_fin = ESPERA, None, None
         self.eventos, self.choques = [], 0
         self.nombre, self.score, self.seguro = None, 0.0, False
@@ -95,7 +133,8 @@ class Mision:
     def resultado(self):
         return dict(tarea=self.tarea, ok=self.estado == FIN, estado=self.estado,
                     tiempo=round(self.tiempo(), 2), choques=self.choques, nombre=self.nombre,
-                    score=round(self.score, 3), seguro=self.seguro)
+                    score=round(self.score, 3), seguro=self.seguro,
+                    perfil=self.perfil.resumen())
 
     def cerrar(self):
         if self.log:
@@ -210,6 +249,7 @@ class Sistema:
             self.bumper = False
         self.anunciador = facial.Anunciador(self.node, voz=args.voz)
         self.rostros = facial.Rostros()
+        self.rostros.calentar()
         self.galeria = facial.Galeria(self.rostros, args.galeria)
         print(f"Galeria: {self.galeria.resumen() or 'VACIA (ver galeria/README.md)'}"
               f" | bumper: {'si' if self.bumper else 'no (solo LiDAR)'}")
@@ -239,7 +279,8 @@ class Sistema:
             self.bump_t = time.monotonic()
 
     def spin(self, timeout):
-        self.rclpy.spin_once(self.node, timeout_sec=timeout)
+        """Un ciclo de control de 'timeout' s (ver drenar)."""
+        drenar(lambda t: self.rclpy.spin_once(self.node, timeout_sec=t), timeout)
 
     def bump(self):
         return time.monotonic() - self.bump_t < 0.3
@@ -325,9 +366,14 @@ def tarea_a(args, s, m, piloto):
         for _, txt in piloto.eventos:
             m.evento(txt)
         piloto.eventos.clear()
-        img = s.frame_nuevo()
+        # La camara solo se decodifica cuando hace falta (en la Pi cada JPEG cuesta CPU que
+        # el LiDAR y el control necesitan): al escanear, con --ver, o si la llegada usa la foto.
+        img = s.frame_nuevo() if (m.estado == ESCANEAR or args.ver
+                                  or (m.estado == IR_A_B and mp.llegada != "distancia")) else None
         if m.estado == IR_A_B:
+            t_p = m.perfil.reloj()
             lin, ang, info = piloto.paso(t, s.odom.pose, *s.lidar.data, bumper_hit=s.bump())
+            m.perfil.registrar(t_p)
             if mp.llegada != "distancia" and img is not None and t - t_vista > 0.3:
                 vista, t_vista = s.vista_cara(img), t
             if llegada_b(info, vista, mp, piloto.pp.goal_tol):
@@ -345,7 +391,9 @@ def tarea_a(args, s, m, piloto):
                 piloto.volver()
                 m.ir(VOLVER_A_A)
         elif m.estado == VOLVER_A_A:
+            t_p = m.perfil.reloj()
             lin, ang, info = piloto.paso(t, s.odom.pose, *s.lidar.data, bumper_hit=s.bump())
+            m.perfil.registrar(t_p)
             if info["llegada"]:
                 s.sender.stop()
                 m.ir(ANUNCIAR, f"a {info['dist']:.2f} m de A")

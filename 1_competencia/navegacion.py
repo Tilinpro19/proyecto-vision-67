@@ -386,7 +386,12 @@ def main():
         last_log = 0.0
         print(f"Ida a B {args.goal}")
         while fase != "fin":
-            rclpy.spin_once(node, timeout_sec=1.0 / args.rate)
+            # un ciclo a 'rate' Hz atendiendo todos los callbacks (spin_once atiende solo uno)
+            fin_ciclo = time.monotonic() + 1.0 / args.rate
+            while True:
+                rclpy.spin_once(node, timeout_sec=max(fin_ciclo - time.monotonic(), 0.0))
+                if time.monotonic() >= fin_ciclo:
+                    break
             t = time.monotonic()
             if not (lidar.fresh() and odom.fresh()):
                 sender.send(0.0, 0.0)  # sin sensores no se mueve

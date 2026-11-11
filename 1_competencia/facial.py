@@ -56,6 +56,14 @@ class Rostros:
         self.det = cv2.FaceDetectorYN.create(YUNET, "", (320, 320), score_min, 0.3, 20)
         self.rec = cv2.FaceRecognizerSF.create(SFACE, "")
 
+    def calentar(self, ancho=640, alto=480):
+        """Una deteccion en vacio: la primera inferencia de OpenCV DNN es mucho mas lenta y,
+        si cae en B, retrasa el escaneo. Mejor pagarla en A, antes de salir."""
+        try:
+            self.detectar(np.zeros((alto, ancho, 3), np.uint8))
+        except Exception:
+            pass
+
     def detectar(self, img):
         h, w = img.shape[:2]
         if max(h, w) < MIN_SIDE:
