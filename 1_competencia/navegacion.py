@@ -327,13 +327,20 @@ def add_ros_args(ap):
 
 def wait_sensors(node, lidar, odom, timeout=15.0):
     import rclpy
-    try:
-        from std_srvs.srv import Empty
-        cli = node.create_client(Empty, "/start_motor")
-        if cli.wait_for_service(timeout_sec=0.5):
-            cli.call_async(Empty.Request())
-    except Exception:
-        pass
+    # /start_motor solo si NO llega /scan: con el LiDAR girando, el driver rplidar falla
+    # ('Cannot start scan: 80008000') y muere (el bringup no lo relanza).
+    fin = time.monotonic() + 1.5
+    while time.monotonic() < fin and not lidar.fresh():
+        rclpy.spin_once(node, timeout_sec=0.05)
+    if not lidar.fresh():
+        try:
+            from std_srvs.srv import Empty
+            cli = node.create_client(Empty, "/start_motor")
+            if cli.wait_for_service(timeout_sec=0.5):
+                print("[arranque] no llega /scan: pido /start_motor")
+                cli.call_async(Empty.Request())
+        except Exception:
+            pass
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=0.05)

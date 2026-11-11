@@ -260,17 +260,30 @@ class Sistema:
         self._despertar_sensores()
 
     def _despertar_sensores(self):
-        """Intenta encender el motor del LiDAR y la camara si estan en reposo (ROS 2 Jazzy)."""
+        """Enciende el LiDAR y la camara SOLO si no llegan datos. Llamar a /start_motor con el
+        LiDAR ya girando hace que el driver rplidar falle ('Cannot start scan: 80008000') y
+        muera, y el bringup no lo relanza: la segunda corrida se queda sin /scan."""
         try:
             from std_srvs.srv import Empty, Trigger
-            cli_lidar = self.node.create_client(Empty, "/start_motor")
-            if cli_lidar.wait_for_service(timeout_sec=0.5):
-                cli_lidar.call_async(Empty.Request())
-            cli_cam = self.node.create_client(Trigger, "/oakd/start_camera")
-            if cli_cam.wait_for_service(timeout_sec=0.5):
-                cli_cam.call_async(Trigger.Request())
+            fin = time.monotonic() + 1.5
+            while time.monotonic() < fin and not (self.lidar.fresh() and self.cam.msg is not None):
+                self.spin(0.1)
+            if not self.lidar.fresh():
+                cli_lidar = self.node.create_client(Empty, "/start_motor")
+                if cli_lidar.wait_for_service(timeout_sec=0.5):
+                    self.evento_arranque("no llega /scan: pido /start_motor")
+                    cli_lidar.call_async(Empty.Request())
+            if self.cam.msg is None and self.cam.img is None:
+                cli_cam = self.node.create_client(Trigger, "/oakd/start_camera")
+                if cli_cam.wait_for_service(timeout_sec=0.5):
+                    self.evento_arranque("no llega la camara: pido /oakd/start_camera")
+                    cli_cam.call_async(Trigger.Request())
         except Exception:
             pass
+
+    @staticmethod
+    def evento_arranque(texto):
+        print(f"[arranque] {texto}", flush=True)
 
     def _on_parar(self, _msg):
         self.parar = True
