@@ -366,6 +366,11 @@ def tarea_a(args, s, m, piloto):
         raise SystemExit("Tarea A: falta --goal X Y (posicion de B respecto a A, en m)")
     cont = ContadorChoques(mp.choque_dist)
     piloto.fijar_origen(s.odom.pose, *s.lidar.data)
+    # La camara ya se comprobo en esperar_sensores. Mientras solo navega no se necesita:
+    # sin suscripcion no llegan (ni se deserializan) imagenes que gastan CPU de la Pi.
+    solo_navega = mp.llegada == "distancia" and not args.ver
+    if solo_navega:
+        s.cam.pausar()
     if mp.cuenta:
         m.evento(f"salgo en {mp.cuenta:.0f} s")
         time.sleep(mp.cuenta)
@@ -392,6 +397,7 @@ def tarea_a(args, s, m, piloto):
                 vista, t_vista = s.vista_cara(img), t
             if llegada_b(info, vista, mp, piloto.pp.goal_tol):
                 s.sender.send(0.0, 0.0)
+                s.cam.reanudar()
                 m.ir(ESCANEAR, f"a {info['dist']:.2f} m de B")
                 escaneo = Escaneo(s.rostros, mp, t)
                 continue
@@ -402,6 +408,8 @@ def tarea_a(args, s, m, piloto):
             if frames is not None:
                 s.sender.send(0.0, 0.0)
                 s.identificar(frames, m)
+                if solo_navega:
+                    s.cam.pausar()
                 piloto.volver()
                 m.ir(VOLVER_A_A)
         elif m.estado == VOLVER_A_A:
