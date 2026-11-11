@@ -118,6 +118,7 @@ class Mision:
     def ir(self, estado, motivo=""):
         if estado == IR_A_B and self.t0 is None:
             self.t0 = self.clock()
+            self.perfil = Perfil(self.perfil.reloj, self.perfil.cpu)  # sin la carga de modelos
         if estado in (FIN, PARADA) and self.t_fin is None and self.t0 is not None:
             self.t_fin = self.clock()
         anterior, self.estado = self.estado, estado
