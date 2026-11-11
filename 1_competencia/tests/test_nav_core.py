@@ -212,3 +212,13 @@ def test_recorded_scan_runs(path):
     h = nc.choose_heading(r, a, goal=0.0)
     if h is not None:
         assert nc.free_distance(r, a, h)[0] >= P.min_free
+
+
+def test_mask_sector_ignora_solo_la_pieza_fija():
+    import math
+    ang = np.radians([180.0, 175.0, 120.0, 180.0, -178.0])
+    r = np.array([0.20, 0.20, 0.20, 1.50, 0.20])
+    r2, a2 = nc.mask_sector(r, ang, 180, 8, 0.25)
+    # se van los de 180, 175 y -178 grados cerca; se quedan el de 120 grados y el lejano
+    assert sorted(np.round(np.degrees(a2)).tolist()) == [120.0, 180.0]
+    assert sorted(r2.tolist()) == [0.2, 1.5]

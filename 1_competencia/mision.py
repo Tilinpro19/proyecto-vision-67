@@ -233,7 +233,7 @@ class Sistema:
         self.rclpy = rclpy
         rclpy.init()
         self.node = rclpy.create_node("mision")
-        self.lidar = Lidar(self.node, args.scan, args.lidar_rot)
+        self.lidar = Lidar(self.node, args.scan, args.lidar_rot, args.lidar_mask)
         self.odom = Odom(self.node, args.odom)
         self.cam = RobotCamera(self.node, args.robot_cam)
         self.cam_t = 0.0

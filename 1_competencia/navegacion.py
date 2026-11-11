@@ -275,11 +275,12 @@ class Lidar:
     """Ultimo /scan con angulos en el marco del robot (0 = frente, + = izquierda).
     En el TB4 el RPLIDAR esta girado: rot_deg = 90 (ver 3_referencia/sigueme.py)."""
 
-    def __init__(self, node, topic, rot_deg):
+    def __init__(self, node, topic, rot_deg, mask=None):
         from rclpy.qos import qos_profile_sensor_data
         from sensor_msgs.msg import LaserScan
 
         self.rot = math.radians(rot_deg)
+        self.mask = mask  # (centro_deg, medio_ancho_deg, r_max_m) o None; ver nc.mask_sector
         self.data = None
         self.last_t = 0.0
         node.create_subscription(LaserScan, topic, self._on_scan, qos_profile_sensor_data)
@@ -288,6 +289,8 @@ class Lidar:
         r = np.asarray(msg.ranges, np.float64)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment + self.rot
         self.data = nc.clean_scan(r, a, msg.range_min, msg.range_max)
+        if self.mask:
+            self.data = nc.mask_sector(*self.data, *self.mask)
         self.last_t = time.monotonic()
 
     def fresh(self, max_age=0.6):
@@ -320,6 +323,9 @@ def add_ros_args(ap):
     ap.add_argument("--cmd-vel", default="/cmd_vel")
     ap.add_argument("--lidar-rot", type=float, default=90.0,
                     help="grados a sumar al /scan para que 0 sea el frente (TB4: 90)")
+    ap.add_argument("--lidar-mask", type=float, nargs=3, metavar=("CENTRO", "MEDIO", "RMAX"),
+                    help="ignorar una pieza fija del robot: lecturas a +-MEDIO grados de CENTRO "
+                         "(marco del robot, 0 = frente) y a menos de RMAX m. Ej.: 180 8 0.25")
     ap.add_argument("--dry", action="store_true", help="no publica /cmd_vel")
     ap.add_argument("--config", help="JSON con parametros (ver config.json)")
     ap.add_argument("--param", action="append", default=[], metavar="nombre=valor")
@@ -369,7 +375,7 @@ def main():
     node = rclpy.create_node("navegacion")
     sender = None
     try:
-        lidar, odom = Lidar(node, args.scan, args.lidar_rot), Odom(node, args.odom)
+        lidar, odom = Lidar(node, args.scan, args.lidar_rot, args.lidar_mask), Odom(node, args.odom)
         sender = Sender(node, args.cmd_vel, args.dry)
         bump_t = 0.0
         try:

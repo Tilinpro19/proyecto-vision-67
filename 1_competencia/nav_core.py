@@ -67,6 +67,16 @@ def clean_scan(ranges, angles, range_min=0.05, range_max=12.0):
     return r[ok], wrap(a[ok])
 
 
+def mask_sector(ranges, angles, center_deg, half_deg, rmax):
+    """Descarta las lecturas dentro de +-half_deg de center_deg (marco del robot, 0 = frente)
+    Y a menos de rmax m. Sirve para ignorar una pieza del propio robot que el LiDAR ve fija
+    (soporte, tornillo, cable); un obstaculo real mas ancho o mas lejos se sigue viendo."""
+    ranges, angles = np.asarray(ranges, float), np.asarray(angles, float)
+    d = np.abs(wrap(angles - math.radians(center_deg)))
+    ok = ~((d <= math.radians(half_deg)) & (ranges < rmax))
+    return ranges[ok], angles[ok]
+
+
 def headings(p=NavParams()):
     return np.linspace(-math.pi, math.pi, p.n_headings)
 
