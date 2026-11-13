@@ -406,19 +406,43 @@ class VirtualObstacles:
 
     def __init__(self):
         self.points = np.empty((0, 2))
+        self.times = np.empty(0, float)
 
-    def add_front(self, pose, dist, half_width, step=0.04, dedup_radius=0.03):
+    def add_front(self, pose, dist, half_width, step=0.04, dedup_radius=0.03, t=None):
         ys = np.arange(-half_width, half_width + 1e-9, step)
         local = np.stack([np.full_like(ys, dist), ys], axis=1)
         c, s = math.cos(pose[2]), math.sin(pose[2])
         world = local @ np.array([[c, s], [-s, c]]) + np.array(pose[:2])
+        stamp = np.nan if t is None else float(t)
         if len(self.points) > 0 and dedup_radius > 0:
             kd = SpatialKDTree2D(self.points)
             new_pts = [pt for pt in world if kd.nearest(pt)[1] > dedup_radius]
             if new_pts:
-                self.points = np.vstack([self.points, np.array(new_pts)])
+                arr = np.array(new_pts)
+                self.points = np.vstack([self.points, arr])
+                self.times = np.r_[self.times, np.full(len(arr), stamp)]
         else:
             self.points = np.vstack([self.points, world])
+            self.times = np.r_[self.times, np.full(len(world), stamp)]
+
+    def prune_expired(self, t, ttl):
+        """Elimina puntos virtuales con marca de tiempo mas vieja que ttl segundos."""
+        if not len(self.points) or ttl is None or ttl <= 0:
+            return
+        keep = np.isnan(self.times) | ((t - self.times) <= ttl)
+        if not np.all(keep):
+            self.points = self.points[keep]
+            self.times = self.times[keep]
+
+    def clear_near(self, xy, radius):
+        """Elimina puntos virtuales dentro de `radius` metros de `xy`."""
+        if not len(self.points):
+            return
+        d = np.hypot(self.points[:, 0] - xy[0], self.points[:, 1] - xy[1])
+        keep = d > radius
+        if not np.all(keep):
+            self.points = self.points[keep]
+            self.times = self.times[keep]
 
     def in_robot(self, pose, max_r=3.0):
         """(ranges, angles) de los puntos virtuales vistos desde pose."""

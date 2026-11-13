@@ -51,6 +51,7 @@ class PilotoParams:
     icp_min_inliers: float = 0.6
     icp_max_rmse: float = 0.05    # m
     icp_max_jump: float = 0.35    # m     correccion mas grande que esto = ICP equivocado
+    virtual_ttl: float = 45.0     # s     caducidad de barreras virtuales de escape
 
 
 @dataclass
@@ -82,6 +83,8 @@ class Piloto:
         self.escape = None                 # (fase, t_inicio, pose_inicio, rumbo)
         self.upto = 0
         self.eventos = []                  # (t, texto) para el registro de la mision
+        self._last_escape_xy = None
+        self._repeat_escapes = 0
 
     # --- API -------------------------------------------------------------------
     def fijar_origen(self, odom_pose, ranges, angles):
@@ -116,6 +119,7 @@ class Piloto:
             pose = self._corregir(t, pose, raw, r, a)
         else:
             self._registrar(pose, r, a)
+        self.virtual.prune_expired(t, pp.virtual_ttl)
         vr, va = self.virtual.in_robot(pose, nav.max_range)
         R, A = np.r_[r, vr], np.r_[a, va]
 
@@ -129,7 +133,7 @@ class Piloto:
         dist = math.hypot(final[0] - pose[0], final[1] - pose[1])
         info = dict(pose=pose, dist=dist, front=float(nc.free_distance(R, A, 0.0, nav)[0]),
                     nearest=nc.nearest(r), estado="escape" if self.escape else "navega",
-                    llegada=self.retorno and dist < pp.home_tol)
+                    llegada=self.retorno and dist < pp.home_tol, atasco_repetido=False)
         if info["llegada"]:
             return 0.0, 0.0, info
 
@@ -141,9 +145,9 @@ class Piloto:
             self.escape = ("atras", t, pose, None)
 
         if self.escape is None and self.monitor.update(t, pose[:2]):
-            self._iniciar_escape(t, pose, R, A, info["front"])
+            info["atasco_repetido"] = self._iniciar_escape(t, pose, R, A, info["front"])
         if self.escape is not None:
-            lin, ang = self._escape(t, pose, R, A)
+            lin, ang = self._escape(t, pose, R, A, r, a)
         else:
             h = nc.choose_heading(R, A, bearing, self.prev_heading, nav)
             if h is None:
@@ -228,23 +232,37 @@ class Piloto:
         return true
 
     def _iniciar_escape(self, t, pose, R, A, front):
+        if self._last_escape_xy is not None and math.hypot(
+                pose[0] - self._last_escape_xy[0], pose[1] - self._last_escape_xy[1]) < 0.40:
+            self._repeat_escapes += 1
+        else:
+            self._repeat_escapes = 1
+        self._last_escape_xy = (pose[0], pose[1])
+
+        repetido = self._repeat_escapes >= 2
         if self.lin > 0.03 and front > self.pp.blind_front:
+            # Barrera permanente (t=None): los obstaculos bajos no desaparecen con el tiempo
             self.virtual.add_front(pose, self.nav.robot_radius + 0.04, self.nav.robot_radius)
             self._log(t, f"atasco con frente libre: obstaculo bajo en ({pose[0]:.2f}, {pose[1]:.2f})")
-        else:
-            # En cualquier atasco contra pared/callejon concavo, proyecta una barrera virtual
-            # para sellar la trampa y que choose_heading no vuelva a entrar en esta concavidad
-            dist_barrera = max(front, self.nav.robot_radius + 0.10)
-            self.virtual.add_front(pose, dist_barrera, self.nav.robot_radius + 0.20)
+        elif not repetido and (self.lin > 0.01 or front > self.nav.stop_dist):
+            # Sella la trampa con un ancho acotado al radio del robot y caducidad virtual_ttl
+            dist_barrera = max(front, self.nav.robot_radius + 0.12)
+            self.virtual.add_front(pose, dist_barrera, self.nav.robot_radius, t=t)
             self._log(t, f"atasco en ({pose[0]:.2f}, {pose[1]:.2f}): sellando trampa con barrera virtual")
+        if repetido:
+            self._log(t, f"atasco repetido en ({pose[0]:.2f}, {pose[1]:.2f}): escapando sin borrar barreras")
         if hasattr(self.crumbs, "prune_branch") and len(self.crumbs) > 2:
             self.crumbs.prune_branch(len(self.crumbs) - 2, len(self.crumbs))
         self.escape = ("atras", t, pose, None)
+        return repetido
 
-    def _escape(self, t, pose, R, A):
+    def _escape(self, t, pose, R, A, r=None, a=None):
         fase, t0, p0, rumbo = self.escape
+        r_real = R if r is None else r
+        a_real = A if a is None else a
         if fase == "atras":
-            back_free = nc.free_distance(R, A, math.pi, self.nav)[0]
+            # Usa el LiDAR real para retroceder: una barrera virtual vieja atras no debe bloquear la marcha atras
+            back_free = nc.free_distance(r_real, a_real, math.pi, self.nav)[0]
             moved = math.hypot(pose[0] - p0[0], pose[1] - p0[1])
             if moved < self.pp.back_dist and back_free > 0.10 and t - t0 < 3.0:
                 return -self.pp.back_speed, 0.0
@@ -252,6 +270,9 @@ class Piloto:
             hs = nc.headings(self.nav)
             free = nc.free_distance(R, A, hs, self.nav)
             free[np.abs(hs) < math.radians(30)] = 0.0
+            if np.max(free) < 0.15:
+                free = nc.free_distance(r_real, a_real, hs, self.nav)
+                free[np.abs(hs) < math.radians(30)] = 0.0
             rumbo = float(nc.wrap(pose[2] + hs[np.argmax(free)]))
             self.escape = fase, t0, p0, rumbo = ("giro", t, pose, rumbo)
         err = float(nc.wrap(rumbo - pose[2]))
