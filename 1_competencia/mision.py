@@ -29,8 +29,10 @@ import nav_core as nc
 from navegacion import Piloto, llegada_por_distancia
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ESPERA, IR_A_B, ESCANEAR, VOLVER_A_A, ANUNCIAR, FIN, PARADA = (
-    "ESPERA", "IR_A_B", "ESCANEAR", "VOLVER_A_A", "ANUNCIAR", "FIN", "PARADA")
+ESPERA, IR_A_B, SEGUIR, DECIDIR, LLEGADA_B, ESCANEAR, VOLVER_A_A, ANUNCIAR, FIN, PARADA = (
+    "ESPERA", "IR_A_B", "SEGUIR", "DECIDIR", "LLEGADA_B",
+    "ESCANEAR", "VOLVER_A_A", "ANUNCIAR", "FIN", "PARADA"
+)
 
 
 @dataclass
@@ -46,6 +48,14 @@ class MisionParams:
     home_tol_b: float = 0.35      # m   Tarea B: anuncio automatico cerca de A
     cuenta: float = 0.0           # s   espera antes de salir de A
     rate: float = 10.0            # Hz  ciclo de control
+    # Supuestos configurables para Tarea A guiada por senales (Seccion 7 de PLAN_ANTIGRAVITY.md)
+    senal_prohibido: str = "buscar_otro"  # buscar_otro | retroceder
+    senal_bandera: str = "llegada_b"      # llegada_b | ignorar
+    senal_qr: str = "registrar"           # registrar | ignorar
+    regreso_modo: str = "migas"           # migas (desanda por migas sin obedecer flechas al volver)
+    flechas_marco: str = "robot"          # robot (izq/der relativas al robot)
+    bandera_frames: int = 2               # frames seguidos con bandera para confirmar llegada a B
+    cam_periodo: float = 0.20             # s entre lecturas de senales en modo guiado (ahorro CPU Pi)
 
 
 def drenar(spin_once, periodo, reloj=time.monotonic):
@@ -93,6 +103,7 @@ class Mision:
         self.perfil = Perfil()
         self.estado, self.t0, self.t_fin = ESPERA, None, None
         self.eventos, self.choques = [], 0
+        self.senales, self.decisiones, self.hitos_qr = [], [], []
         self.nombre, self.score, self.seguro = None, 0.0, False
         self.log = None
         if log_dir:
@@ -116,7 +127,7 @@ class Mision:
             self.log.flush()
 
     def ir(self, estado, motivo=""):
-        if estado == IR_A_B and self.t0 is None:
+        if estado in (IR_A_B, SEGUIR) and self.t0 is None:
             self.t0 = self.clock()
             self.perfil = Perfil(self.perfil.reloj, self.perfil.cpu)  # sin la carga de modelos
         if estado in (FIN, PARADA) and self.t_fin is None and self.t0 is not None:
@@ -135,6 +146,7 @@ class Mision:
         return dict(tarea=self.tarea, ok=self.estado == FIN, estado=self.estado,
                     tiempo=round(self.tiempo(), 2), choques=self.choques, nombre=self.nombre,
                     score=round(self.score, 3), seguro=self.seguro,
+                    senales=self.senales, decisiones=self.decisiones, hitos_qr=self.hitos_qr,
                     perfil=self.perfil.resumen())
 
     def cerrar(self):
@@ -206,8 +218,10 @@ def args_parser():
 
     ap = argparse.ArgumentParser(description="Mision completa A -> B -> A")
     ap.add_argument("--tarea", choices=("A", "B"), required=True)
+    ap.add_argument("--modo", choices=("auto", "goal", "guiado"), default="auto",
+                    help="Tarea A: 'goal' usa --goal X Y; 'guiado' sigue senales/pasillos sin --goal")
     ap.add_argument("--goal", type=float, nargs=2, metavar=("X", "Y"),
-                    help="Tarea A: B en m respecto a A (x frente, y izquierda)")
+                    help="Tarea A: B en m respecto a A (x frente, y izquierda); si se omite usa modo guiado")
     ap.add_argument("--galeria", default=os.path.join(HERE, "galeria"))
     ap.add_argument("--umbral", type=float, default=None, help="similitud SFace (0.363)")
     ap.add_argument("--voz", default="auto", choices=("auto", "windows", "linux", "ninguna"))
@@ -432,6 +446,255 @@ def tarea_a(args, s, m, piloto):
             cv2.waitKey(1)
 
 
+class PilotoGuiado:
+    """Coordinador de navegacion por pasillos + senales en B/N + exploracion de cruces
+    para la Tarea A sin --goal. Sin ROS: opera sobre Piloto, pasillo.py y decision.py."""
+
+    def __init__(self, piloto=None, mp=None, pp_pasillo=None):
+        import decision as dc
+        import pasillo as ps
+
+        self.piloto = piloto or Piloto()
+        self.mp = mp or MisionParams()
+        self.pp_pasillo = pp_pasillo or ps.PasilloParams()
+        self.dp = dc.DecisionParams(
+            senal_prohibido=self.mp.senal_prohibido,
+            senal_bandera=self.mp.senal_bandera,
+            senal_qr=self.mp.senal_qr,
+            regreso_modo=self.mp.regreso_modo,
+            flechas_marco=self.mp.flechas_marco,
+        )
+        self.rumbo_pasillo = 0.0
+        self.ultimo_cruce_xy = None
+        self.cruce_anterior_key = None
+        self.dir_entrada = None
+        self.visitas_cruce = {}     # key_xy -> {dir_cardinal: conteo}
+        self.agotadas_cruce = {}    # key_xy -> set(dir_cardinal)
+        self.senal_pendiente = None
+        self.t_senal = -1e9
+        self.cont_bandera = 0
+        self.min_dist_cruce = 0.85
+
+    def iniciar(self, odom_pose, ranges, angles):
+        self.piloto.fijar_origen(odom_pose, ranges, angles)
+        self.rumbo_pasillo = 0.0
+        self.ultimo_cruce_xy = (0.0, 0.0)
+
+    @staticmethod
+    def _dir_cardinal(rad):
+        return int(round(nc.wrap(rad) / (math.pi / 2.0))) % 4
+
+    @classmethod
+    def _mapa_dirs(cls, rumbo):
+        return {
+            "recto": cls._dir_cardinal(rumbo),
+            "izq": cls._dir_cardinal(rumbo + math.pi / 2.0),
+            "der": cls._dir_cardinal(rumbo - math.pi / 2.0),
+        }
+
+    def registrar_senales(self, t, senales_vistas, mision=None):
+        """Procesa las senales detectadas en un frame de camara. Devuelve True si se confirmo
+        la llegada a B por bandera (`bandera_frames` seguidos)."""
+        vio_bandera = False
+        for s in senales_vistas or ():
+            if s.tipo == "qr":
+                if self.mp.senal_qr == "registrar" and mision is not None and s.texto not in mision.hitos_qr:
+                    mision.hitos_qr.append(s.texto)
+                    mision.senales.append(dict(t=round(mision.tiempo(), 2), tipo="qr", texto=s.texto))
+                    mision.evento(f"hito QR registrado: {s.texto}")
+            elif s.tipo == "bandera":
+                vio_bandera = True
+            elif s.tipo in ("izq", "der", "prohibido"):
+                prev = getattr(self.senal_pendiente, "tipo", None)
+                if prev != s.tipo or (t - self.t_senal) > 2.0:
+                    if mision is not None:
+                        mision.senales.append(dict(t=round(mision.tiempo(), 2), tipo=s.tipo,
+                                                   confianza=round(s.confianza, 2)))
+                        mision.evento(f"senal detectada: {s.tipo} (conf={s.confianza:.2f})")
+                self.senal_pendiente = s
+                self.t_senal = t
+
+        if vio_bandera and self.mp.senal_bandera == "llegada_b":
+            self.cont_bandera += 1
+            if self.cont_bandera >= self.mp.bandera_frames:
+                if mision is not None:
+                    mision.senales.append(dict(t=round(mision.tiempo(), 2), tipo="bandera"))
+                return True
+        else:
+            self.cont_bandera = 0
+        return False
+
+    def paso(self, t, odom_pose, ranges, angles, mision=None, bumper_hit=False):
+        """Un ciclo de navegacion guiada en estado SEGUIR / DECIDIR.
+        Devuelve (lin, ang, info)."""
+        import decision as dc
+        import pasillo as ps
+
+        pose = self.piloto.pose(odom_pose)
+        r, a = nc.clean_scan(ranges, angles, self.piloto.nav.scan_min)
+        pto = ps.analizar_pasillo(r, a, self.pp_pasillo, self.piloto.nav)
+
+        # Caducar senal pendiente si quedo muy atras
+        if self.senal_pendiente is not None and (t - self.t_senal) > 6.5:
+            self.senal_pendiente = None
+
+        alineado = abs(nc.wrap(pose[2] - self.rumbo_pasillo)) < math.radians(28.0)
+        lejos_de_ultimo = (self.ultimo_cruce_xy is None
+                           or math.hypot(pose[0] - self.ultimo_cruce_xy[0],
+                                         pose[1] - self.ultimo_cruce_xy[1]) >= self.min_dist_cruce)
+        frente_bloqueado = pto.dist_frente < self.pp_pasillo.block_front
+
+        # Si hay cruce nuevo o pared frontal y ya estamos alineados en el pasillo, decidir
+        if alineado and ((pto.en_cruce and lejos_de_ultimo) or frente_bloqueado):
+            key = (round(pose[0] / 1.0), round(pose[1] / 1.0))
+            vis_mundo = self.visitas_cruce.setdefault(key, {})
+            ago_mundo = self.agotadas_cruce.setdefault(key, set())
+            mapa_d = self._mapa_dirs(self.rumbo_pasillo)
+
+            vis_rel = {op: vis_mundo.get(d_m, 0) for op, d_m in mapa_d.items()}
+            ago_rel = {op for op, d_m in mapa_d.items() if d_m in ago_mundo}
+            avisos = []
+
+            if mision is not None and mision.estado != DECIDIR:
+                mision.ir(DECIDIR, f"opciones={sorted(pto.opciones)}")
+
+            accion = dc.decidir(
+                pto.opciones,
+                senal=self.senal_pendiente,
+                visitado=vis_rel,
+                avisos=avisos,
+                agotadas=ago_rel,
+                params=self.dp,
+            )
+            for op in ago_rel:
+                ago_mundo.add(mapa_d[op])
+            self.senal_pendiente = None
+
+            if mision is not None:
+                for av in avisos:
+                    mision.evento(av)
+                mision.decisiones.append(dict(
+                    t=round(mision.tiempo(), 2),
+                    pose=[round(pose[0], 2), round(pose[1], 2), round(pose[2], 2)],
+                    opciones=sorted(pto.opciones),
+                    accion=accion,
+                ))
+
+            if accion == "llegada_b":
+                if mision is not None:
+                    mision.ir(LLEGADA_B, "senal bandera en cruce")
+                return 0.0, 0.0, dict(pose=pose, dist=0.0, front=pto.dist_frente,
+                                      nearest=nc.nearest(r), estado="llegada_b", llegada=False, llegada_b=True)
+
+            if accion == "retroceder":
+                # Marcar la rama por la que entramos al cruce anterior como agotada
+                if self.cruce_anterior_key is not None and self.dir_entrada is not None:
+                    self.agotadas_cruce.setdefault(self.cruce_anterior_key, set()).add(self.dir_entrada)
+                self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo + math.pi)
+            else:
+                d_elegida = mapa_d[accion]
+                vis_mundo[d_elegida] = vis_mundo.get(d_elegida, 0) + 1
+                self.cruce_anterior_key = key
+                self.dir_entrada = d_elegida
+                if accion == "izq":
+                    self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo + math.pi / 2.0)
+                elif accion == "der":
+                    self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo - math.pi / 2.0)
+
+            self.ultimo_cruce_xy = (pose[0], pose[1])
+            if mision is not None and mision.estado != SEGUIR:
+                mision.ir(SEGUIR, f"accion={accion}")
+
+        # Zanahoria local a 1.4 m en la direccion del pasillo elegido; Piloto aporta VFH-lite y migas
+        self.piloto.retorno = False
+        self.piloto.meta = (
+            pose[0] + 1.4 * math.cos(self.rumbo_pasillo),
+            pose[1] + 1.4 * math.sin(self.rumbo_pasillo),
+        )
+        lin, ang, info = self.piloto.paso(t, odom_pose, ranges, angles, bumper_hit=bumper_hit)
+        info["llegada_b"] = False
+        return lin, ang, info
+
+
+def tarea_a_guiada(args, s, m, piloto):
+    """Tarea A sin --goal: sigue pasillos y senales hasta ver la bandera en B,
+    escanea el rostro con facial.py, regresa a A por migas+ICP y anuncia."""
+    import cv2
+
+    import senales_forma as sf
+
+    mp = s.mp
+    cont = ContadorChoques(mp.choque_dist)
+    guiado = PilotoGuiado(piloto, mp)
+    guiado.iniciar(s.odom.pose, *s.lidar.data)
+    if mp.cuenta:
+        m.evento(f"salgo en {mp.cuenta:.0f} s")
+        time.sleep(mp.cuenta)
+    m.ir(SEGUIR, "modo guiado por senales + LiDAR")
+    escaneo, t_cam = None, -1e9
+
+    while m.activa():
+        s.spin(1.0 / mp.rate)
+        t = time.monotonic()
+        if not comunes(s, m, cont, t):
+            continue
+        for _, txt in piloto.eventos:
+            m.evento(txt)
+        piloto.eventos.clear()
+
+        img = s.frame_nuevo() if m.estado in (SEGUIR, DECIDIR, LLEGADA_B, ESCANEAR) or args.ver else None
+
+        if m.estado in (SEGUIR, DECIDIR):
+            t_p = m.perfil.reloj()
+            if img is not None and (t - t_cam) >= mp.cam_periodo:
+                t_cam = t
+                # Filtro rapido en preview antes de correr el detector completo (ahorro CPU Pi)
+                senales_vistas = sf.detectar(img, esfuerzo_qr=1) if sf.buscar_candidatos(img) else []
+                if guiado.registrar_senales(t, senales_vistas, m):
+                    s.sender.send(0.0, 0.0)
+                    m.ir(LLEGADA_B, "bandera de cuadros confirmada")
+                    m.ir(ESCANEAR, "analizando rostros en B")
+                    escaneo = Escaneo(s.rostros, mp, t)
+                    m.perfil.registrar(t_p)
+                    continue
+            lin, ang, info = guiado.paso(t, s.odom.pose, *s.lidar.data, mision=m, bumper_hit=s.bump())
+            m.perfil.registrar(t_p)
+            if info.get("llegada_b"):
+                s.sender.send(0.0, 0.0)
+                m.ir(ESCANEAR, "analizando rostros en B")
+                escaneo = Escaneo(s.rostros, mp, t)
+                continue
+            s.sender.send(lin, ang)
+        elif m.estado == ESCANEAR:
+            ang, frames = escaneo.paso(t, img)
+            s.sender.send(0.0, ang)
+            if frames is not None:
+                s.sender.send(0.0, 0.0)
+                s.identificar(frames, m)
+                if not args.ver:
+                    s.cam.pausar()
+                piloto.volver()
+                m.ir(VOLVER_A_A, f"regreso={mp.regreso_modo}")
+        elif m.estado == VOLVER_A_A:
+            t_p = m.perfil.reloj()
+            lin, ang, info = piloto.paso(t, s.odom.pose, *s.lidar.data, bumper_hit=s.bump())
+            m.perfil.registrar(t_p)
+            if info["llegada"]:
+                s.sender.stop()
+                m.ir(ANUNCIAR, f"a {info['dist']:.2f} m de A")
+                continue
+            s.sender.send(lin, ang)
+        elif m.estado == ANUNCIAR:
+            s.sender.stop()
+            s.anunciador.anunciar(m.nombre or "desconocido")
+            m.ir(FIN)
+        if args.ver and img is not None:
+            cv2.putText(img, f"{m.estado} {m.tiempo():.1f}s", (5, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.imshow("mision A guiada", img)
+            cv2.waitKey(1)
+
+
 def tarea_b(args, s, m):
     import cv2
 
@@ -523,7 +786,10 @@ def main():
         if not esperar_sensores(s, m):
             raise SystemExit("No llegan /scan y /odom: revisa la conexion (tb4_check.sh).")
         if args.tarea == "A":
-            tarea_a(args, s, m, piloto)
+            if args.modo == "guiado" or (args.modo == "auto" and args.goal is None):
+                tarea_a_guiada(args, s, m, piloto)
+            else:
+                tarea_a(args, s, m, piloto)
         else:
             tarea_b(args, s, m)
     except KeyboardInterrupt:

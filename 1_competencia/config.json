@@ -14,5 +14,11 @@
   "stuck_time": 4.5,
   "t_max": 300.0,
   "choque_dist": 0.20,
-  "llegada": "distancia"
+  "llegada": "distancia",
+  "senal_prohibido": "buscar_otro",
+  "senal_bandera": "llegada_b",
+  "senal_qr": "registrar",
+  "regreso_modo": "migas",
+  "flechas_marco": "robot",
+  "bandera_frames": 2
 }
