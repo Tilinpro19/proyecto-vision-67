@@ -127,3 +127,33 @@ def test_mision_guiada_senal_contradice_pared_no_choca_y_queda_en_log():
     assert res["ok"] is True
     assert sim.collisions == 0
     assert any("contradice al LiDAR" in ev for ev in m.eventos)
+
+
+def test_mision_guiada_callejon_sin_salida_retrocede_y_llega_a_b():
+    def forzar_callejon_en_t(pose, _t):
+        x, y, th = pose
+        # En la primera pasada por la T manda al callejon derecho (-y), que esta cerrado en y=-1.8
+        if 0.8 < x < 1.9 and abs(y) < 0.5 and abs(th) < 0.6:
+            return [Senal("der", 0.90, (100, 100, 50, 50))]
+        if x > 3.2 and 1.6 < y < 2.8:
+            return [Senal("bandera", 0.92, (120, 80, 90, 120))]
+        return []
+
+    m, sim = _simular_mision_guiada(forzar_callejon_en_t, t_max=220.0)
+    res = m.resultado()
+    assert res["ok"] is True
+    assert sim.collisions == 0
+    assert any(d["accion"] == "retroceder" for d in res["decisiones"])
+    assert math.hypot(sim.true[0], sim.true[1]) < 0.35
+
+
+def test_mision_guiada_dos_senales_en_mismo_frame_prioriza_la_mas_cercana():
+    m = ms.Mision("A", quiet=True)
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    senales = [
+        Senal("izq", 0.88, (80, 80, 90, 90)),   # mas grande / cercana (primera en detectar())
+        Senal("der", 0.92, (200, 120, 30, 30)), # mas pequena / lejana
+    ]
+    assert guiado.registrar_senales(1.0, senales, m) is False
+    assert guiado.senal_pendiente is not None
+    assert guiado.senal_pendiente.tipo == "izq"

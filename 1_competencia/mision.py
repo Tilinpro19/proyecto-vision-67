@@ -496,6 +496,7 @@ class PilotoGuiado:
         """Procesa las senales detectadas en un frame de camara. Devuelve True si se confirmo
         la llegada a B por bandera (`bandera_frames` seguidos)."""
         vio_bandera = False
+        tomo_nav = False
         for s in senales_vistas or ():
             if s.tipo == "qr":
                 if self.mp.senal_qr == "registrar" and mision is not None and s.texto not in mision.hitos_qr:
@@ -504,7 +505,9 @@ class PilotoGuiado:
                     mision.evento(f"hito QR registrado: {s.texto}")
             elif s.tipo == "bandera":
                 vio_bandera = True
-            elif s.tipo in ("izq", "der", "prohibido"):
+            elif s.tipo in ("izq", "der", "prohibido") and not tomo_nav:
+                # detectar() ordena de mayor a menor area: priorizar la senal mas cercana
+                tomo_nav = True
                 prev = getattr(self.senal_pendiente, "tipo", None)
                 if prev != s.tipo or (t - self.t_senal) > 2.0:
                     if mision is not None:
