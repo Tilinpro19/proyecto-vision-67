@@ -475,6 +475,7 @@ class PilotoGuiado:
         )
         self.rumbo_pasillo = 0.0
         self.ultimo_cruce_xy = None
+        self.ultima_accion = None
         self.cruce_anterior_key = None
         self.dir_entrada = None
         self.visitas_cruce = {}     # key_xy -> {dir_cardinal: conteo}
@@ -551,13 +552,16 @@ class PilotoGuiado:
             self.senal_pendiente = None
 
         alineado = abs(nc.wrap(pose[2] - self.rumbo_pasillo)) < math.radians(28.0)
-        lejos_de_ultimo = (self.ultimo_cruce_xy is None
-                           or math.hypot(pose[0] - self.ultimo_cruce_xy[0],
-                                         pose[1] - self.ultimo_cruce_xy[1]) >= self.min_dist_cruce)
+        dist_ultimo = (math.inf if self.ultimo_cruce_xy is None
+                       else math.hypot(pose[0] - self.ultimo_cruce_xy[0],
+                                       pose[1] - self.ultimo_cruce_xy[1]))
+        lejos_de_ultimo = dist_ultimo >= self.min_dist_cruce
         frente_bloqueado = pto.dist_frente < self.pp_pasillo.block_front
+        # Tras retroceder en un callejon, permitir salir >= min_dist_cruce antes de re-evaluar frente
+        puede_frente = frente_bloqueado and not (self.ultima_accion == "retroceder" and not lejos_de_ultimo)
 
         # Si hay cruce nuevo o pared frontal y ya estamos alineados en el pasillo, decidir
-        if alineado and ((pto.en_cruce and lejos_de_ultimo) or frente_bloqueado):
+        if alineado and ((pto.en_cruce and lejos_de_ultimo) or puede_frente):
             key = (round(pose[0] / 1.0), round(pose[1] / 1.0))
             vis_mundo = self.visitas_cruce.setdefault(key, {})
             ago_mundo = self.agotadas_cruce.setdefault(key, set())
@@ -614,6 +618,7 @@ class PilotoGuiado:
                     self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo - math.pi / 2.0)
 
             self.ultimo_cruce_xy = (pose[0], pose[1])
+            self.ultima_accion = accion
             if mision is not None and mision.estado != SEGUIR:
                 mision.ir(SEGUIR, f"accion={accion}")
 

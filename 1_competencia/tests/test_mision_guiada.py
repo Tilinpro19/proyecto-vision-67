@@ -157,3 +157,24 @@ def test_mision_guiada_dos_senales_en_mismo_frame_prioriza_la_mas_cercana():
     assert guiado.registrar_senales(1.0, senales, m) is False
     assert guiado.senal_pendiente is not None
     assert guiado.senal_pendiente.tipo == "izq"
+
+
+def test_mision_guiada_retroceder_no_gira_en_bucle_en_el_mismo_sitio():
+    # Reproduce el caso real: tras decidir "retroceder" y girar 180 deg, el LiDAR sigue viendo
+    # obstaculo < block_front en el mismo sitio (< min_dist_cruce); no debe volver a retroceder.
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    guiado.iniciar((0.0, 0.0, 0.0), [2.0] * 36, [0.0] * 36)
+    angles = [math.radians(i * 10 - 180) for i in range(36)]
+    # Callejón cerrado por frente y lados (0.55 m): opciones=[] y frente_bloqueado=True
+    ranges_cerrado = [0.55] * 36
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+
+    # 1. Primera vez en (2.40, -0.42) mirando a 0 rad: debe decidir "retroceder" e invertir rumbo a pi
+    guiado.paso(10.0, (2.40, -0.42, 0.0), ranges_cerrado, angles, mision=m)
+    assert guiado.ultima_accion == "retroceder"
+    assert len(m.decisiones) == 1
+
+    # 2. Ya giro 180 deg a pi rad, pero sigue en (2.44, -0.43) con < 0.80 m al frente: NO debe re-decidir
+    guiado.paso(13.5, (2.44, -0.43, math.pi), ranges_cerrado, angles, mision=m)
+    assert len(m.decisiones) == 1
