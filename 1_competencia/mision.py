@@ -308,7 +308,16 @@ class Sistema:
 
     def spin(self, timeout):
         """Un ciclo de control de 'timeout' s (ver drenar)."""
-        drenar(lambda t: self.rclpy.spin_once(self.node, timeout_sec=t), timeout)
+        if not self.rclpy.ok():
+            self.parar = True
+            return
+        try:
+            drenar(lambda t: self.rclpy.spin_once(self.node, timeout_sec=t), timeout)
+        except Exception:
+            if not self.rclpy.ok():
+                self.parar = True
+            else:
+                raise
 
     def bump(self):
         return time.monotonic() - self.bump_t < 0.3
