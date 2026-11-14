@@ -240,9 +240,7 @@ def main():
         # Despertar motor del LiDAR y camara en caso esten en reposo
         try:
             from std_srvs.srv import Empty, Trigger
-            cli_lidar = node.create_client(Empty, "/start_motor")
-            if cli_lidar.wait_for_service(timeout_sec=0.5):
-                cli_lidar.call_async(Empty.Request())
+            # (sin /start_motor: con el LiDAR ya girando tumba el driver rplidar)
             cli_cam = node.create_client(Trigger, "/oakd/start_camera")
             if cli_cam.wait_for_service(timeout_sec=0.5):
                 cli_cam.call_async(Trigger.Request())

@@ -289,14 +289,27 @@ class RobotCamera:
     """Ultima imagen de la camara del robot (CompressedImage, QoS sensor data)."""
 
     def __init__(self, node, topic):
-        from rclpy.qos import qos_profile_sensor_data
-        from sensor_msgs.msg import CompressedImage
-
-        self.topic = topic
+        self.node, self.topic = node, topic
         self.msg = None
         self.img = None
         self.last_t = 0.0
-        node.create_subscription(CompressedImage, topic, self._on_image, qos_profile_sensor_data)
+        self._sub = None
+        self.reanudar()
+
+    def reanudar(self):
+        """Se suscribe a la camara (no hace nada si ya lo esta)."""
+        if self._sub is None:
+            from rclpy.qos import qos_profile_sensor_data
+            from sensor_msgs.msg import CompressedImage
+            self._sub = self.node.create_subscription(
+                CompressedImage, self.topic, self._on_image, qos_profile_sensor_data)
+
+    def pausar(self):
+        """Deja de recibir imagenes: en la Pi cada JPEG que llega cuesta CPU (~10 % de un
+        nucleo) aunque no se decodifique. Se usa mientras el robot solo navega."""
+        if self._sub is not None:
+            self.node.destroy_subscription(self._sub)
+            self._sub, self.msg = None, None
 
     def _on_image(self, msg):
         self.msg = msg

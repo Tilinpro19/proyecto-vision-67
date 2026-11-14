@@ -34,3 +34,7 @@ SPOILER_carta_de_suicidio_turtlebot2025.txt
 _legacy/
 seguimiento_vision/
 .pytest_cache/
+
+# resultados de corridas en la Pi
+1_competencia/resultados/
+1_competencia/logs/

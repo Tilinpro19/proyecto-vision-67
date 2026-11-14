@@ -142,3 +142,61 @@ def test_mision_con_deriva_de_odometria_corrige_con_icp():
     check(res, sim)
     err_mal = math.hypot(*res_mal["true"][:2]) if res_mal["ok"] else math.inf
     assert err_mal > 0.4  # la deriva sin corregir si deja lejos de A
+
+
+def test_virtual_obstacles_ttl_y_limpieza():
+    vo = nc.VirtualObstacles()
+    vo.add_front((0.0, 0.0, 0.0), 0.3, 0.1, t=10.0)
+    vo.add_front((2.0, 0.0, 0.0), 0.3, 0.1, t=50.0)
+    assert len(vo.points) > 0
+    vo.prune_expired(60.0, ttl=45.0)
+    assert all(p[0] > 1.0 for p in vo.points)
+    vo.clear_near((2.3, 0.0), 0.5)
+    assert len(vo.points) == 0
+
+
+def test_escape_no_queda_en_jaula_virtual():
+    r, a = raycast(room())
+    piloto = Piloto()
+    piloto.fijar_origen((0.0, 0.0, 0.0), r, a)
+    piloto.ir_a((2.0, 0.0))
+    # Simulamos barreras virtuales rodeando al robot en 4 direcciones
+    for ang in (0.0, math.pi / 2, math.pi, -math.pi / 2):
+        piloto.virtual.add_front((0.0, 0.0, ang), 0.25, 0.20, t=1.0)
+    n_antes = len(piloto.virtual.points)
+    # Dos atascos en el mismo sitio no borran barreras (evita olvidar obstaculos bajos)
+    # y aun asi permiten retroceder usando el LiDAR real
+    rep1 = piloto._iniciar_escape(2.0, (0.0, 0.0, 0.0), r, a, 0.0)
+    rep2 = piloto._iniciar_escape(8.0, (0.01, 0.0, 0.0), r, a, 0.0)
+    assert not rep1 and rep2
+    assert len(piloto.virtual.points) == n_antes
+    lin, _ = piloto._escape(8.1, (0.01, 0.0, 0.0), r, a, r, a)
+    assert lin < 0.0  # puede retroceder usando el LiDAR real
+
+
+def test_obstaculo_bajo_y_bumper_no_caducan():
+    r, a = raycast(room())
+    piloto = Piloto()
+    piloto.fijar_origen((0.0, 0.0, 0.0), r, a)
+    piloto.ir_a((3.0, 0.0))
+    # Obstaculo bajo (frente libre y avanzando): barrera permanente
+    piloto.lin = 0.15
+    piloto._iniciar_escape(5.0, (0.0, 0.0, 0.0), r, a, 2.0)
+    n_bajo = len(piloto.virtual.points)
+    assert n_bajo > 0
+    # Sellar trampa (frente obstruido en otro lugar): barrera con TTL
+    piloto.lin = 0.02
+    piloto._iniciar_escape(10.0, (2.0, 0.0, 0.0), r, a, 0.25)
+    assert len(piloto.virtual.points) > n_bajo
+    # Pasado virtual_ttl, solo caduca la barrera de trampa; la de obstaculo bajo sigue viva
+    piloto.virtual.prune_expired(10.0 + piloto.pp.virtual_ttl + 5.0, piloto.pp.virtual_ttl)
+    assert len(piloto.virtual.points) == n_bajo
+    assert all(p[0] < 1.0 for p in piloto.virtual.points)
+    # Bumper tambien pone barrera permanente
+    piloto.escape = None
+    piloto.virtual.clear_near((0.0, 0.0), 5.0)
+    piloto.paso(200.0, (0.0, 0.0, 0.0), r, a, bumper_hit=True)
+    n_bumper = len(piloto.virtual.points)
+    assert n_bumper > 0
+    piloto.virtual.prune_expired(1000.0, piloto.pp.virtual_ttl)
+    assert len(piloto.virtual.points) == n_bumper

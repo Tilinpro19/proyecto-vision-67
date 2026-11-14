@@ -67,6 +67,16 @@ def clean_scan(ranges, angles, range_min=0.05, range_max=12.0):
     return r[ok], wrap(a[ok])
 
 
+def mask_sector(ranges, angles, center_deg, half_deg, rmax):
+    """Descarta las lecturas dentro de +-half_deg de center_deg (marco del robot, 0 = frente)
+    Y a menos de rmax m. Sirve para ignorar una pieza del propio robot que el LiDAR ve fija
+    (soporte, tornillo, cable); un obstaculo real mas ancho o mas lejos se sigue viendo."""
+    ranges, angles = np.asarray(ranges, float), np.asarray(angles, float)
+    d = np.abs(wrap(angles - math.radians(center_deg)))
+    ok = ~((d <= math.radians(half_deg)) & (ranges < rmax))
+    return ranges[ok], angles[ok]
+
+
 def headings(p=NavParams()):
     return np.linspace(-math.pi, math.pi, p.n_headings)
 
@@ -396,19 +406,43 @@ class VirtualObstacles:
 
     def __init__(self):
         self.points = np.empty((0, 2))
+        self.times = np.empty(0, float)
 
-    def add_front(self, pose, dist, half_width, step=0.04, dedup_radius=0.03):
+    def add_front(self, pose, dist, half_width, step=0.04, dedup_radius=0.03, t=None):
         ys = np.arange(-half_width, half_width + 1e-9, step)
         local = np.stack([np.full_like(ys, dist), ys], axis=1)
         c, s = math.cos(pose[2]), math.sin(pose[2])
         world = local @ np.array([[c, s], [-s, c]]) + np.array(pose[:2])
+        stamp = np.nan if t is None else float(t)
         if len(self.points) > 0 and dedup_radius > 0:
             kd = SpatialKDTree2D(self.points)
             new_pts = [pt for pt in world if kd.nearest(pt)[1] > dedup_radius]
             if new_pts:
-                self.points = np.vstack([self.points, np.array(new_pts)])
+                arr = np.array(new_pts)
+                self.points = np.vstack([self.points, arr])
+                self.times = np.r_[self.times, np.full(len(arr), stamp)]
         else:
             self.points = np.vstack([self.points, world])
+            self.times = np.r_[self.times, np.full(len(world), stamp)]
+
+    def prune_expired(self, t, ttl):
+        """Elimina puntos virtuales con marca de tiempo mas vieja que ttl segundos."""
+        if not len(self.points) or ttl is None or ttl <= 0:
+            return
+        keep = np.isnan(self.times) | ((t - self.times) <= ttl)
+        if not np.all(keep):
+            self.points = self.points[keep]
+            self.times = self.times[keep]
+
+    def clear_near(self, xy, radius):
+        """Elimina puntos virtuales dentro de `radius` metros de `xy`."""
+        if not len(self.points):
+            return
+        d = np.hypot(self.points[:, 0] - xy[0], self.points[:, 1] - xy[1])
+        keep = d > radius
+        if not np.all(keep):
+            self.points = self.points[keep]
+            self.times = self.times[keep]
 
     def in_robot(self, pose, max_r=3.0):
         """(ranges, angles) de los puntos virtuales vistos desde pose."""
@@ -422,19 +456,27 @@ class VirtualObstacles:
         return r[ok], a[ok]
 
 
-def icp_2d(ref, cur, init=(0.0, 0.0, 0.0), iters=40, max_pair=0.3, tol=1e-5):
+def _nearest(pts, ref, ref2):
+    """Vecino mas cercano de cada punto de pts en ref: (indices, distancias). Usa
+    |a-b|^2 = |a|^2 + |b|^2 - 2a.b (una multiplicacion de matrices) en vez de armar el
+    tensor N x N x 2: mismo resultado, ~10x mas rapido y sin memoria temporal grande."""
+    d2 = (pts ** 2).sum(1)[:, None] + ref2[None, :] - 2.0 * (pts @ ref.T)
+    j = d2.argmin(1)
+    return j, np.sqrt(np.maximum(d2[np.arange(len(pts)), j], 0.0))
+
+
+def icp_2d(ref, cur, init=(0.0, 0.0, 0.0), iters=40, max_pair=0.3, tol=1e-4):
     """ICP punto a punto. ref, cur: (N, 2) en m. Devuelve (pose, inliers, rmse) donde pose
     es la del marco 'cur' dentro del marco 'ref' (ref ~ R*cur + t), o None si no encaja."""
     ref, cur = np.asarray(ref, float), np.asarray(cur, float)
     if len(ref) < 10 or len(cur) < 10:
         return None
+    ref2 = (ref ** 2).sum(1)
     x, y, th = init
     for _ in range(iters):
         c, s = math.cos(th), math.sin(th)
         moved = cur @ np.array([[c, s], [-s, c]]) + (x, y)
-        d2 = ((moved[:, None, :] - ref[None, :, :]) ** 2).sum(-1)
-        j = d2.argmin(1)
-        dist = np.sqrt(d2[np.arange(len(cur)), j])
+        j, dist = _nearest(moved, ref, ref2)
         m = dist < max_pair
         if m.sum() < 10:
             return None
@@ -450,7 +492,7 @@ def icp_2d(ref, cur, init=(0.0, 0.0, 0.0), iters=40, max_pair=0.3, tol=1e-5):
             break
     c, s = math.cos(th), math.sin(th)
     moved = cur @ np.array([[c, s], [-s, c]]) + (x, y)
-    dist = np.sqrt(((moved[:, None, :] - ref[None, :, :]) ** 2).sum(-1).min(1))
+    dist = _nearest(moved, ref, ref2)[1]
     inl = dist < max_pair / 3
     rmse = float(np.sqrt(np.mean(dist[inl] ** 2))) if inl.any() else math.inf
     return (x, y, float(wrap(th))), float(inl.mean()), rmse
