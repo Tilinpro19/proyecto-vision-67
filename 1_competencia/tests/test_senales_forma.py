@@ -93,3 +93,44 @@ def test_cero_falsos_positivos_en_fondos_y_rostros():
 
     for img in negativos:
         assert sf.detectar(img) == []
+
+
+@pytest.mark.parametrize("tipo,archivo", [
+    ("izq", "flecha_izq.png"),
+    ("der", "flecha_der.png"),
+    ("prohibido", "prohibido.png"),
+    ("bandera", "bandera_meta.png"),
+])
+@pytest.mark.parametrize("condicion", ["sobreexposicion", "poca_luz", "sombra_lateral", "inclinacion_10"])
+def test_condiciones_reales_camara_y_preview_250px(tipo, archivo, condicion):
+    base = cv2.imread(os.path.join(DATA_SENALES, archivo), cv2.IMREAD_GRAYSCALE)
+    escena = _escena_forma(base, dist_m=1.1, ancho_px=640, yaw_deg=0.0, blur_px=2, ruido=3.0)
+    H, W = escena.shape[:2]
+    if condicion == "sobreexposicion":
+        im = np.clip(escena.astype(np.float32) * 0.45 + 140.0, 0, 255).astype(np.uint8)
+    elif condicion == "poca_luz":
+        im = np.clip(escena.astype(np.float32) * 0.45 + 10.0, 0, 255).astype(np.uint8)
+    elif condicion == "sombra_lateral":
+        grad = np.linspace(0.35, 1.0, W, dtype=np.float32)[None, :, None]
+        im = np.clip(escena.astype(np.float32) * grad, 0, 255).astype(np.uint8)
+    else:
+        M = cv2.getRotationMatrix2D((W / 2, H / 2), 10.0, 1.0)
+        im = cv2.warpAffine(escena, M, (W, H), borderValue=(180, 180, 180))
+
+    preview = cv2.resize(im, (250, int(250 * H / W)), interpolation=cv2.INTER_AREA)
+    assert len(sf.buscar_candidatos(preview)) >= 1, f"preview 250px no detecto candidato en {tipo}/{condicion}"
+
+    res = sf.detectar(im)
+    assert len(res) >= 1 and res[0].tipo == tipo, f"fallo {tipo}/{condicion}: {[s.tipo for s in res]}"
+
+
+def test_cero_falsos_positivos_en_patrones_regulares():
+    # Rayas verticales y horizontales (rejas/persianas) no deben confundirse con bandera ni circulos
+    rayas_v = np.full((360, 480, 3), 220, dtype=np.uint8)
+    for x in range(100, 380, 24):
+        rayas_v[:, x:x + 10] = 25
+    rayas_h = np.full((360, 480, 3), 220, dtype=np.uint8)
+    for y in range(60, 300, 24):
+        rayas_h[y:y + 10, :] = 25
+    for im in (rayas_v, rayas_h):
+        assert sf.detectar(im) == []

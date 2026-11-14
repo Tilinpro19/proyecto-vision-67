@@ -80,7 +80,7 @@ _CIRCLE_TEMPLATES = {
     "der": _TMPL_DER[_INNER_MASK],
     "prohibido": _TMPL_PROH[_INNER_MASK],
 }
-_BAND_VARIANTS = [
+_BAND_BASE = [
     _TMPL_BAND,
     np.rot90(_TMPL_BAND, 1),
     np.rot90(_TMPL_BAND, 2),
@@ -200,19 +200,8 @@ def _clasificar_circulo(gray_crop):
     return mejor_tipo, conf
 
 
-def _es_bandera(gray_crop):
-    """Evalua si un recorte contiene el patron de la bandera de cuadros.
-    Retorna (es_valida, confianza)."""
-    h, w = gray_crop.shape[:2]
-    if h < 14 or w < 14 or float(gray_crop.std()) < 22.0:
-        return False, 0.0
-    aspect = max(w, h) / max(min(w, h), 1)
-    if aspect > 3.2:
-        return False, 0.0
-
-    thr, bw = cv2.threshold(gray_crop, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-    if thr > 155:
-        _, bw = cv2.threshold(gray_crop, 140, 255, cv2.THRESH_BINARY_INV)
+def _eval_bw_bandera(bw):
+    """Evalua una mascara binaria de bandera de cuadros. Retorna (es_valida, confianza)."""
     ys, xs = np.where(bw > 0)
     if len(xs) < 25:
         return False, 0.0
@@ -235,12 +224,46 @@ def _es_bandera(gray_crop):
         return False, 0.0
 
     c32 = cv2.resize((sub > 0).astype(np.float32), (32, 32), interpolation=cv2.INTER_AREA)
-    best_corr = max(_corr(c32, v) for v in _BAND_VARIANTS)
+    best_corr = max(_corr(c32, v) for v in _BAND_BASE)
+    if 0.22 <= best_corr < 0.42:
+        # Si la bandera esta ligeramente inclinada (roll), probar desrotarla +-10 deg
+        sub_f = (sub > 0).astype(np.float32)
+        for ang in (-10.0, 10.0):
+            M = cv2.getRotationMatrix2D((sw / 2.0, sh / 2.0), ang, 1.0)
+            rot = cv2.warpAffine(sub_f, M, (sw, sh), flags=cv2.INTER_NEAREST)
+            ry, rx = np.where(rot > 0.5)
+            if len(rx) >= 25:
+                sub_r = rot[ry.min():ry.max() + 1, rx.min():rx.max() + 1]
+                c32_r = cv2.resize(sub_r, (32, 32), interpolation=cv2.INTER_AREA)
+                best_corr = max(best_corr, max(_corr(c32_r, v) for v in _BAND_BASE))
     if best_corr < 0.42:
         return False, 0.0
 
     conf = float(np.clip(0.65 * best_corr + 0.35 * min(min(trans_h, trans_v) / 6.0, 1.0), 0.0, 1.0))
     return True, conf
+
+
+def _es_bandera(gray_crop):
+    """Evalua si un recorte contiene el patron de la bandera de cuadros.
+    Retorna (es_valida, confianza)."""
+    h, w = gray_crop.shape[:2]
+    if h < 14 or w < 14 or float(gray_crop.std()) < 16.0:
+        return False, 0.0
+    aspect = max(w, h) / max(min(w, h), 1)
+    if aspect > 3.2:
+        return False, 0.0
+
+    _, bw_otsu = cv2.threshold(gray_crop, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    ok, conf = _eval_bw_bandera(bw_otsu)
+    if ok:
+        return True, conf
+
+    # Fallback adaptativo: resiste sombras diagonales y bordes grises en recortes inclinados
+    blk = max(9, (min(h, w) // 2) | 1)
+    bw_ad = cv2.adaptiveThreshold(
+        gray_crop, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, blk, 6
+    )
+    return _eval_bw_bandera(bw_ad)
 
 
 def _a_gris(img):
@@ -323,12 +346,16 @@ def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
             out.append(Senal(tipo, conf, box, texto=None,
                              distancia_m=_estimar_dist(w, h, W, lado_m, fov_deg)))
 
-    # 3. Bandera de cuadros: usar mascara de tinta oscura (<= 135) para no fusionar paredes grises
+    # 3. Bandera de cuadros: combina mascara oscura y umbral adaptativo (resiste luz fuerte/sombras)
     thr_otsu, _ = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     _, mask_band = cv2.threshold(blur, min(float(thr_otsu), 135.0), 255, cv2.THRESH_BINARY_INV)
+    mask_adapt = adapt.copy()
     for x, y, w, h in ocupados:
         pad = 4
-        mask_band[max(0, y - pad):min(H, y + h + pad), max(0, x - pad):min(W, x + w + pad)] = 0
+        y0, y1 = max(0, y - pad), min(H, y + h + pad)
+        x0, x1 = max(0, x - pad), min(W, x + w + pad)
+        mask_band[y0:y1, x0:x1] = 0
+        mask_adapt[y0:y1, x0:x1] = 0
 
     # Si toda la imagen ya es una bandera suelta (como bandera_cuadros.png)
     if not ocupados:
@@ -346,15 +373,18 @@ def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
 
     k_close = max(5, int(round(0.015 * min(H, W))) | 1)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_close, k_close))
-    closed = cv2.morphologyEx(mask_band, cv2.MORPH_CLOSE, kernel)
-    cs_b, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in sorted(cs_b, key=cv2.contourArea, reverse=True):
-        x, y, w, h = cv2.boundingRect(c)
-        if w < 14 or h < 14 or w * h < 220:
-            continue
-        box = (x, y, w, h)
+    cand_band = []
+    for m_src in (mask_adapt, mask_band):
+        closed = cv2.morphologyEx(m_src, cv2.MORPH_CLOSE, kernel)
+        cs_b, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cs_b:
+            x, y, w, h = cv2.boundingRect(c)
+            if w >= 14 and h >= 14 and w * h >= 220:
+                cand_band.append((x, y, w, h))
+    for box in sorted(cand_band, key=lambda b: -(b[2] * b[3])):
         if any(_iou(box, b) > 0.25 or _contiene(b, box) or _contiene(box, b) for b in ocupados):
             continue
+        x, y, w, h = box
         ok_b, conf_b = _es_bandera(gray[y:y + h, x:x + w])
         if ok_b:
             ocupados.append(box)
@@ -372,9 +402,11 @@ def buscar_candidatos(img, area_min_frac=0.0015):
         return []
     gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     H, W = gray.shape[:2]
-    if float(gray.std()) < 14.0:
-        return []
-    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0.8)
+    blk = max(15, (min(H, W) // 6) | 1)
+    bw = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, blk, 7
+    )
     if float((bw > 0).mean()) > 0.65:
         return []
     k = max(3, int(round(0.015 * max(H, W))) | 1)
@@ -385,6 +417,6 @@ def buscar_candidatos(img, area_min_frac=0.0015):
         x, y, w, h = cv2.boundingRect(c)
         if w * h >= area_min_frac * H * W and 0.35 <= (w / float(h)) <= 2.8:
             crop = gray[y:y + h, x:x + w]
-            if float(crop.std()) >= 25.0:
+            if float(crop.std()) >= 8.0:
                 out.append((x, y, w, h))
     return sorted(out, key=lambda b: -(b[2] * b[3]))

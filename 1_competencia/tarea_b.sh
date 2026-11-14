@@ -9,7 +9,9 @@ if [ -z "$TB4_IP" ]; then
   if [ -z "$ROBOT_IP" ] && [ -f ~/.tb4_robot ]; then
     source ~/.tb4_robot
   else
-    source ../tb4_connect.sh "${ROBOT_IP:-192.168.0.104}" "${ROBOT_ID:-67}" || exit 1
+    _TB4_CONN="../tb4_connect.sh"
+    [ -f "$_TB4_CONN" ] || _TB4_CONN="../../tb4_connect.sh"
+    source "$_TB4_CONN" "${ROBOT_IP:-192.168.0.104}" "${ROBOT_ID:-67}" || exit 1
   fi
 fi
 exec python3 mision.py --tarea B "$@"
