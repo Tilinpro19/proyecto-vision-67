@@ -3,10 +3,17 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
 .env
 venv/
 env/
 .venv/
+
+# Logs, caches y paquetes locales
+*.log
+logs/
+*.npz
+*.zip
 
 # Editor / OS
 .vscode/

@@ -167,7 +167,7 @@ class Robot:
 
     def ir_a(self, x, y, vel=0.15, frenar_a=0.30):
         """Gira hacia (x, y) del marco odom y avanza en linea recta (sin evasion: para
-        esquivar obstaculos usar el Piloto de proyecto_final/1_competencia/navegacion.py)."""
+        esquivar obstaculos usar el Piloto de 1_competencia/navegacion.py)."""
         self.esperar_sensores()
         px, py, yaw = self.odom.pose
         rumbo = math.atan2(y - py, x - px)

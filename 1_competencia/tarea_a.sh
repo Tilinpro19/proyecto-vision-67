@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tarea A en un solo comando (desde WSL, en ~/turtleclaude4/proyecto_final/1_competencia):
+# Tarea A en un solo comando (desde WSL, dentro de 1_competencia/):
 #   ./tarea_a.sh --goal 3.0 0.5            # B a 3 m al frente y 0.5 m a la izquierda de A
 #   ./tarea_a.sh --goal 3.0 0.5 --param max_linear=0.25 --ver
 # Robot distinto: ROBOT_IP=192.168.0.105 ROBOT_ID=68 ./tarea_a.sh ...
@@ -9,7 +9,7 @@ if [ -z "$TB4_IP" ]; then
   if [ -z "$ROBOT_IP" ] && [ -f ~/.tb4_robot ]; then
     source ~/.tb4_robot
   else
-    source ../2_laboratorio/tb4_connect.sh "${ROBOT_IP:-192.168.0.104}" "${ROBOT_ID:-67}" || exit 1
+    source ../tb4_connect.sh "${ROBOT_IP:-192.168.0.104}" "${ROBOT_ID:-67}" || exit 1
   fi
 fi
 exec python3 mision.py --tarea A "$@"
