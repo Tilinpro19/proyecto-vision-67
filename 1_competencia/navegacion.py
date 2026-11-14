@@ -264,7 +264,7 @@ class Piloto:
             # Usa el LiDAR real para retroceder: una barrera virtual vieja atras no debe bloquear la marcha atras
             back_free = nc.free_distance(r_real, a_real, math.pi, self.nav)[0]
             moved = math.hypot(pose[0] - p0[0], pose[1] - p0[1])
-            if moved < self.pp.back_dist and back_free > 0.10 and t - t0 < 3.0:
+            if moved < self.pp.back_dist and back_free > 0.20 and t - t0 < 3.0:
                 return -self.pp.back_speed, 0.0
             # gira hacia lo mas abierto, evitando volver de frente a donde se trabo
             hs = nc.headings(self.nav)

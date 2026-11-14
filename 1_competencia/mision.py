@@ -540,6 +540,15 @@ class PilotoGuiado:
     def _dir_cardinal(rad):
         return int(round(nc.wrap(rad) / (math.pi / 2.0))) % 4
 
+    def _clave_cruce(self, x, y, radio=0.80):
+        """Reutiliza el cruce guardado mas cercano a < radio m; si no hay, crea uno nuevo."""
+        mejor_k, mejor_d = None, radio
+        for k in set(self.visitas_cruce) | set(self.agotadas_cruce):
+            d = math.hypot(x - k[0], y - k[1])
+            if d < mejor_d:
+                mejor_k, mejor_d = k, d
+        return mejor_k if mejor_k is not None else (round(x, 2), round(y, 2))
+
     @classmethod
     def _mapa_dirs(cls, rumbo):
         return {
@@ -623,7 +632,7 @@ class PilotoGuiado:
         # Si hay cruce nuevo o pared frontal y ya estamos alineados en el pasillo, decidir
         puede_cruce = pto.en_cruce and lejos_de_ultimo and self.retrocediendo_hasta_idx is None
         if alineado and (puede_cruce or puede_frente):
-            key = (round(pose[0] / 1.0), round(pose[1] / 1.0))
+            key = self._clave_cruce(pose[0], pose[1])
             vis_mundo = self.visitas_cruce.setdefault(key, {})
             ago_mundo = self.agotadas_cruce.setdefault(key, set())
             mapa_d = self._mapa_dirs(self.rumbo_pasillo)

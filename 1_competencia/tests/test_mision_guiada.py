@@ -291,3 +291,45 @@ def test_mision_guarda_diagnostico_npz_en_choque_y_atasco(tmp_path):
     npz_files = [f for f in os.listdir(tmp_path) if f.endswith(".npz")]
     assert len(npz_files) == 2
     m.cerrar()
+
+
+def test_mision_guiada_clave_cruce_reutiliza_cruce_cercano_en_borde():
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    angles = [math.radians(i * 5 - 180) for i in range(72)]
+    guiado.iniciar((0.0, 0.0, 0.0), [3.0] * 72, angles)
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+
+    # Cruce en x=1.48 (antes caia en celda 1)
+    r_cruce = _scan_cruce_izq_y_recto(angles, rumbo_izq=True, rumbo_der=False, rumbo_recto=True)
+    guiado.piloto.crumbs.append((1.48, 0.02))
+    guiado.paso(5.0, (1.48, 0.02, 0.0), r_cruce, angles, mision=m)
+    assert len(guiado.visitas_cruce) == 1
+
+    # Avanza al callejon en (2.6, 0.0) y retrocede
+    guiado.piloto.crumbs.extend([(2.1, 0.0), (2.6, 0.0)])
+    guiado.paso(10.0, (2.6, 0.0, 0.0), [0.55] * 72, angles, mision=m)
+    assert m.decisiones[-1]["accion"] == "retroceder"
+
+    # Al volver con drift a x=1.56 (antes caia en celda 2), debe reutilizar el mismo cruce (1.48, 0.02)
+    guiado.paso(15.0, (1.56, -0.04, math.pi), _scan_cruce_izq_y_recto(angles, rumbo_izq=False, rumbo_der=True, rumbo_recto=True), angles, mision=m)
+    assert (1.48, 0.02) in guiado.visitas_cruce
+    assert guiado.visitas_cruce[(1.48, 0.02)].get(1) == 1
+    assert len(guiado.visitas_cruce) == 2
+    assert m.decisiones[-1]["accion"] == "der"
+
+
+def test_escape_atras_respeta_margen_back_free_020():
+    import navegacion as nv
+
+    piloto = nv.Piloto()
+    angles = [math.radians(i * 10 - 180) for i in range(36)]
+    piloto.fijar_origen((0.0, 0.0, 0.0), [3.0] * 36, angles)
+    piloto.escape = ("atras", 1.0, (0.0, 0.0, 0.0), None)
+
+    # Obstaculo detras a 0.35 m -> tras restar robot_radius(0.17)+safety_margin(0.10)=0.27, back_free~0.08 <= 0.20
+    # Debe cortar la marcha atras y pasar a fase "giro" (lin == 0.0)
+    ranges = [0.35 if abs(abs(a) - math.pi) < 0.4 else 2.5 for a in angles]
+    lin, _ang, _info = piloto.paso(1.2, (0.0, 0.0, 0.0), ranges, angles)
+    assert lin == 0.0
+    assert piloto.escape[0] == "giro"
