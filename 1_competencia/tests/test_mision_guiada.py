@@ -196,3 +196,98 @@ def test_mision_guiada_retroceder_sigue_migas_de_vuelta_al_cruce():
     # La meta debe apuntar a una miga del camino de regreso (y >= -0.65, x <= 1.7), no a (3.4, -0.7)
     assert guiado.piloto.meta[0] <= 1.75
     assert guiado.piloto.meta[1] >= -0.65
+
+
+def _scan_cruce_izq_y_recto(angles, rumbo_izq=True, rumbo_der=False, rumbo_recto=True):
+    """Genera un scan sintetico con pasillo abierto segun las direcciones indicadas."""
+    ranges = []
+    for ang in angles:
+        if rumbo_recto and abs(ang) < 0.60:
+            ranges.append(2.5)
+        elif rumbo_izq and abs(ang - math.pi / 2) < 0.60:
+            ranges.append(2.5)
+        elif rumbo_der and abs(ang + math.pi / 2) < 0.60:
+            ranges.append(2.5)
+        else:
+            ranges.append(0.55)
+    return ranges
+
+
+def test_mision_guiada_al_volver_prefiere_rama_sin_explorar_sobre_origen():
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    angles = [math.radians(i * 5 - 180) for i in range(72)]
+    guiado.iniciar((0.0, 0.0, 0.0), [3.0] * 72, angles)
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+
+    # 1. En el cruce (1.0, 0.0) mirando a +x: opciones 'recto' (+x) e 'izq' (+y). Elige 'recto'.
+    guiado.piloto.crumbs.append((1.0, 0.0))
+    r_ida = _scan_cruce_izq_y_recto(angles, rumbo_izq=True, rumbo_der=False, rumbo_recto=True)
+    guiado.paso(5.0, (1.0, 0.0, 0.0), r_ida, angles, mision=m)
+    assert m.decisiones[-1]["accion"] == "recto"
+
+    # 2. En (2.2, 0.0) encuentra callejon y retrocede hacia -x (pi).
+    guiado.piloto.crumbs.extend([(1.6, 0.0), (2.2, 0.0)])
+    guiado.paso(10.0, (2.2, 0.0, 0.0), [0.55] * 72, angles, mision=m)
+    assert m.decisiones[-1]["accion"] == "retroceder"
+
+    # 3. De vuelta en (1.0, 0.0) mirando a -x (pi): 'recto' vuelve a A, 'der' es la rama +y sin explorar.
+    r_vuelta = _scan_cruce_izq_y_recto(angles, rumbo_izq=False, rumbo_der=True, rumbo_recto=True)
+    guiado.paso(15.0, (1.0, 0.0, math.pi), r_vuelta, angles, mision=m)
+    assert m.decisiones[-1]["accion"] == "der"
+
+
+def test_mision_guiada_retroceso_no_se_cancela_antes_de_llegar_al_cruce():
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    angles = [math.radians(i * 5 - 180) for i in range(72)]
+    guiado.iniciar((0.0, 0.0, 0.0), [3.0] * 72, angles)
+    guiado.piloto.crumbs.extend([(0.5, 0.0), (0.9, 0.0), (1.5, 0.0), (2.2, 0.0), (2.8, 0.0)])
+    guiado.cruce_anterior_miga_idx = 2  # cruce previo en (0.9, 0.0)
+
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+    guiado.paso(10.0, (2.8, 0.0, 0.0), [0.55] * 72, angles, mision=m)
+    assert guiado.retrocediendo_hasta_idx == 2
+    assert len(m.decisiones) == 1
+
+    # En (1.6, 0.0) mirando a pi aparece un cruce intermedio (> 0.45 m de (0.9, 0.0)): NO debe decidir ni cancelar
+    r_cruce = _scan_cruce_izq_y_recto(angles, rumbo_izq=False, rumbo_der=True, rumbo_recto=True)
+    guiado.paso(13.0, (1.6, 0.0, math.pi), r_cruce, angles, mision=m)
+    assert guiado.retrocediendo_hasta_idx == 2
+    assert len(m.decisiones) == 1
+
+    # Al llegar a < 0.45 m de (0.9, 0.0), completa el retroceso, poda migas y decide en el cruce
+    guiado.paso(16.0, (0.95, 0.0, math.pi), r_cruce, angles, mision=m)
+    assert guiado.retrocediendo_hasta_idx is None
+    assert len(m.decisiones) == 2
+
+
+def test_mision_guarda_diagnostico_npz_en_choque_y_atasco(tmp_path):
+    import numpy as np
+
+    m = ms.Mision("A", log_dir=str(tmp_path), quiet=True)
+    m.ir(ms.SEGUIR)
+    ruta = m.guardar_diagnostico("atasco", (1.2, -0.3, 0.5), [0.4, 1.5], [-0.5, 0.5], [(0.0, 0.0), (1.2, -0.3)])
+    assert ruta is not None and os.path.isfile(ruta)
+    data = np.load(ruta)
+    assert list(data["pose"]) == [1.2, -0.3, 0.5]
+    assert len(data["ranges"]) == 2
+    assert data["crumbs"].shape == (2, 2)
+
+    # Verificar que _volcar_eventos_piloto dispara diagnostico cuando hay evento de atasco
+    class _StubLidar:
+        data = ([0.5, 1.0], [-0.2, 0.2])
+
+    class _StubOdom:
+        pose = (0.5, 0.1, 0.0)
+
+    class _StubSistema:
+        lidar = _StubLidar()
+        odom = _StubOdom()
+
+    piloto = ms.Piloto()
+    piloto.eventos.append((1.0, "atasco con frente libre: obstaculo bajo en (0.50, 0.10)"))
+    ms._volcar_eventos_piloto(_StubSistema(), m, piloto)
+    npz_files = [f for f in os.listdir(tmp_path) if f.endswith(".npz")]
+    assert len(npz_files) == 2
+    m.cerrar()

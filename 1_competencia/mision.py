@@ -105,6 +105,9 @@ class Mision:
         self.eventos, self.choques = [], 0
         self.senales, self.decisiones, self.hitos_qr = [], [], []
         self.nombre, self.score, self.seguro = None, 0.0, False
+        self.log_dir = log_dir
+        self._diag_seq = 0
+        self.log_path = None
         self.log = None
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
@@ -141,6 +144,25 @@ class Mision:
     def choque(self, origen):
         self.choques += 1
         self.evento(f"CHOQUE #{self.choques} ({origen})")
+
+    def guardar_diagnostico(self, motivo, pose, ranges, angles, crumbs=None):
+        """Guarda scan, pose y migas en un .npz dentro de log_dir para depurar atascos/choques."""
+        if not self.log_dir:
+            return None
+        self._diag_seq += 1
+        base = os.path.splitext(os.path.basename(self.log_path))[0] if self.log_path else f"mision_{self.tarea}"
+        nombre = f"{base}_{self._diag_seq:03d}_{motivo}.npz"
+        ruta = os.path.join(self.log_dir, nombre)
+        np.savez_compressed(
+            ruta,
+            t=np.array([self.tiempo()], dtype=np.float64),
+            pose=np.asarray(pose, dtype=np.float64),
+            ranges=np.asarray(ranges, dtype=np.float32),
+            angles=np.asarray(angles, dtype=np.float32),
+            crumbs=np.asarray(list(crumbs) if crumbs else [], dtype=np.float64),
+        )
+        self.evento(f"diagnostico guardado: {nombre}")
+        return ruta
 
     def resultado(self):
         return dict(tarea=self.tarea, ok=self.estado == FIN, estado=self.estado,
@@ -366,7 +388,7 @@ def esperar_sensores(s, m, timeout=20.0):
     return False
 
 
-def comunes(s, m, cont, t):
+def comunes(s, m, cont, t, piloto=None):
     """Chequeos de cada ciclo. Devuelve False si el robot debe quedarse quieto."""
     if s.parar:
         m.ir(PARADA, "/mision/parar")
@@ -378,8 +400,27 @@ def comunes(s, m, cont, t):
         s.sender.send(0.0, 0.0)
         return False
     if cont.update(t, nc.nearest(s.lidar.data[0]), s.bump()):
-        m.choque("bumper" if s.bump() else "LiDAR")
+        origen = "bumper" if s.bump() else "LiDAR"
+        m.choque(origen)
+        r, a = s.lidar.data
+        pose = piloto.pose(s.odom.pose) if (piloto is not None and piloto.origin is not None) else s.odom.pose
+        crumbs = piloto.crumbs if piloto is not None else None
+        m.guardar_diagnostico(f"choque_{origen}", pose, r, a, crumbs)
     return True
+
+
+def _volcar_eventos_piloto(s, m, piloto):
+    """Vuelca eventos del Piloto al log de la mision y guarda scan si hubo atasco."""
+    atasco = False
+    for _, txt in piloto.eventos:
+        m.evento(txt)
+        if "atasco" in txt:
+            atasco = True
+    piloto.eventos.clear()
+    if atasco:
+        r, a = s.lidar.data
+        pose = piloto.pose(s.odom.pose) if piloto.origin is not None else s.odom.pose
+        m.guardar_diagnostico("atasco", pose, r, a, piloto.crumbs)
 
 
 def tarea_a(args, s, m, piloto):
@@ -403,11 +444,9 @@ def tarea_a(args, s, m, piloto):
     while m.activa():
         s.spin(1.0 / mp.rate)
         t = time.monotonic()
-        if not comunes(s, m, cont, t):
+        if not comunes(s, m, cont, t, piloto):
             continue
-        for _, txt in piloto.eventos:
-            m.evento(txt)
-        piloto.eventos.clear()
+        _volcar_eventos_piloto(s, m, piloto)
         # La camara solo se decodifica cuando hace falta (en la Pi cada JPEG cuesta CPU que
         # el LiDAR y el control necesitan): al escanear, con --ver, o si la llegada usa la foto.
         img = s.frame_nuevo() if (m.estado == ESCANEAR or args.ver
@@ -571,8 +610,19 @@ class PilotoGuiado:
             and not (self.ultima_accion == "retroceder" and not lejos_de_ultimo)
         )
 
+        # Si estamos retrocediendo por migas, comprobar llegada al cruce objetivo antes de decidir
+        if self.retrocediendo_hasta_idx is not None:
+            if len(self.piloto.crumbs) <= self.retrocediendo_hasta_idx:
+                self.retrocediendo_hasta_idx = None
+            else:
+                objetivo_cruce = self.piloto.crumbs[self.retrocediendo_hasta_idx]
+                if math.hypot(pose[0] - objetivo_cruce[0], pose[1] - objetivo_cruce[1]) < 0.45:
+                    self.piloto.crumbs.prune_branch(self.retrocediendo_hasta_idx + 1, self._retroceso_fin_idx)
+                    self.retrocediendo_hasta_idx = None
+
         # Si hay cruce nuevo o pared frontal y ya estamos alineados en el pasillo, decidir
-        if alineado and ((pto.en_cruce and lejos_de_ultimo) or puede_frente):
+        puede_cruce = pto.en_cruce and lejos_de_ultimo and self.retrocediendo_hasta_idx is None
+        if alineado and (puede_cruce or puede_frente):
             key = (round(pose[0] / 1.0), round(pose[1] / 1.0))
             vis_mundo = self.visitas_cruce.setdefault(key, {})
             ago_mundo = self.agotadas_cruce.setdefault(key, set())
@@ -627,6 +677,8 @@ class PilotoGuiado:
                     self.piloto.crumbs.prune_branch(self.retrocediendo_hasta_idx + 1, self._retroceso_fin_idx)
                     self.retrocediendo_hasta_idx = None
                 d_elegida = mapa_d[accion]
+                d_origen = self._dir_cardinal(self.rumbo_pasillo + math.pi)
+                vis_mundo[d_origen] = max(vis_mundo.get(d_origen, 0), 1)
                 vis_mundo[d_elegida] = vis_mundo.get(d_elegida, 0) + 1
                 self.cruce_anterior_key = key
                 self.cruce_anterior_miga_idx = max(0, len(self.piloto.crumbs) - 1)
@@ -645,27 +697,18 @@ class PilotoGuiado:
         # Si estamos retrocediendo de un callejon, seguir las migas de vuelta al cruce anterior
         self.piloto.retorno = False
         if self.retrocediendo_hasta_idx is not None and len(self.piloto.crumbs) > self.retrocediendo_hasta_idx:
-            objetivo_cruce = self.piloto.crumbs[self.retrocediendo_hasta_idx]
-            if math.hypot(pose[0] - objetivo_cruce[0], pose[1] - objetivo_cruce[1]) < 0.45:
-                self.piloto.crumbs.prune_branch(self.retrocediendo_hasta_idx + 1, self._retroceso_fin_idx)
-                self.retrocediendo_hasta_idx = None
-                self.piloto.meta = (
-                    pose[0] + 1.4 * math.cos(self.rumbo_pasillo),
-                    pose[1] + 1.4 * math.sin(self.rumbo_pasillo),
-                )
-            else:
-                wp_idx = nc.pick_waypoint(
-                    self.piloto.crumbs, pose, r, a,
-                    upto=min(self._retroceso_upto, len(self.piloto.crumbs) - 1),
-                    lookahead=2.0, p=self.piloto.nav,
-                )
-                wp_idx = max(wp_idx, self.retrocediendo_hasta_idx)
-                while (wp_idx > self.retrocediendo_hasta_idx
-                       and math.hypot(pose[0] - self.piloto.crumbs[wp_idx][0],
-                                      pose[1] - self.piloto.crumbs[wp_idx][1]) < 0.25):
-                    wp_idx -= 1
-                self._retroceso_upto = wp_idx
-                self.piloto.meta = self.piloto.crumbs[wp_idx]
+            wp_idx = nc.pick_waypoint(
+                self.piloto.crumbs, pose, r, a,
+                upto=min(self._retroceso_upto, len(self.piloto.crumbs) - 1),
+                lookahead=2.0, p=self.piloto.nav,
+            )
+            wp_idx = max(wp_idx, self.retrocediendo_hasta_idx)
+            while (wp_idx > self.retrocediendo_hasta_idx
+                   and math.hypot(pose[0] - self.piloto.crumbs[wp_idx][0],
+                                  pose[1] - self.piloto.crumbs[wp_idx][1]) < 0.25):
+                wp_idx -= 1
+            self._retroceso_upto = wp_idx
+            self.piloto.meta = self.piloto.crumbs[wp_idx]
         else:
             # Zanahoria local a 1.4 m en la direccion del pasillo elegido; Piloto aporta VFH-lite y migas
             self.piloto.meta = (
@@ -697,11 +740,9 @@ def tarea_a_guiada(args, s, m, piloto):
     while m.activa():
         s.spin(1.0 / mp.rate)
         t = time.monotonic()
-        if not comunes(s, m, cont, t):
+        if not comunes(s, m, cont, t, piloto):
             continue
-        for _, txt in piloto.eventos:
-            m.evento(txt)
-        piloto.eventos.clear()
+        _volcar_eventos_piloto(s, m, piloto)
 
         img = s.frame_nuevo() if m.estado in (SEGUIR, DECIDIR, LLEGADA_B, ESCANEAR) or args.ver else None
 
