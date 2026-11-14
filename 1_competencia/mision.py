@@ -476,6 +476,7 @@ class PilotoGuiado:
         self.rumbo_pasillo = 0.0
         self.ultimo_cruce_xy = None
         self.ultima_accion = None
+        self.t_ultima_decision = -1e9
         self.cruce_anterior_key = None
         self.cruce_anterior_miga_idx = 0
         self.retrocediendo_hasta_idx = None
@@ -563,8 +564,12 @@ class PilotoGuiado:
                                        pose[1] - self.ultimo_cruce_xy[1]))
         lejos_de_ultimo = dist_ultimo >= self.min_dist_cruce
         frente_bloqueado = pto.dist_frente < self.pp_pasillo.block_front
-        # Tras retroceder en un callejon, permitir salir >= min_dist_cruce antes de re-evaluar frente
-        puede_frente = frente_bloqueado and not (self.ultima_accion == "retroceder" and not lejos_de_ultimo)
+        # Tras retroceder en un callejon, permitir salir >= min_dist_cruce; tras girar, esperar >= 2.5 s
+        puede_frente = (
+            frente_bloqueado
+            and (t - self.t_ultima_decision) >= 2.5
+            and not (self.ultima_accion == "retroceder" and not lejos_de_ultimo)
+        )
 
         # Si hay cruce nuevo o pared frontal y ya estamos alineados en el pasillo, decidir
         if alineado and ((pto.en_cruce and lejos_de_ultimo) or puede_frente):
@@ -633,6 +638,7 @@ class PilotoGuiado:
 
             self.ultimo_cruce_xy = (pose[0], pose[1])
             self.ultima_accion = accion
+            self.t_ultima_decision = t
             if mision is not None and mision.estado != SEGUIR:
                 mision.ir(SEGUIR, f"accion={accion}")
 
