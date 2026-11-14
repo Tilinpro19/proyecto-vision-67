@@ -477,6 +477,10 @@ class PilotoGuiado:
         self.ultimo_cruce_xy = None
         self.ultima_accion = None
         self.cruce_anterior_key = None
+        self.cruce_anterior_miga_idx = 0
+        self.retrocediendo_hasta_idx = None
+        self._retroceso_upto = 0
+        self._retroceso_fin_idx = 0
         self.dir_entrada = None
         self.visitas_cruce = {}     # key_xy -> {dir_cardinal: conteo}
         self.agotadas_cruce = {}    # key_xy -> set(dir_cardinal)
@@ -489,6 +493,8 @@ class PilotoGuiado:
         self.piloto.fijar_origen(odom_pose, ranges, angles)
         self.rumbo_pasillo = 0.0
         self.ultimo_cruce_xy = (0.0, 0.0)
+        self.cruce_anterior_miga_idx = 0
+        self.retrocediendo_hasta_idx = None
 
     @staticmethod
     def _dir_cardinal(rad):
@@ -607,10 +613,18 @@ class PilotoGuiado:
                 if self.cruce_anterior_key is not None and self.dir_entrada is not None:
                     self.agotadas_cruce.setdefault(self.cruce_anterior_key, set()).add(self.dir_entrada)
                 self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo + math.pi)
+                if len(self.piloto.crumbs) > 1:
+                    self.retrocediendo_hasta_idx = min(self.cruce_anterior_miga_idx, len(self.piloto.crumbs) - 2)
+                    self._retroceso_upto = len(self.piloto.crumbs) - 2
+                    self._retroceso_fin_idx = len(self.piloto.crumbs)
             else:
+                if self.retrocediendo_hasta_idx is not None:
+                    self.piloto.crumbs.prune_branch(self.retrocediendo_hasta_idx + 1, self._retroceso_fin_idx)
+                    self.retrocediendo_hasta_idx = None
                 d_elegida = mapa_d[accion]
                 vis_mundo[d_elegida] = vis_mundo.get(d_elegida, 0) + 1
                 self.cruce_anterior_key = key
+                self.cruce_anterior_miga_idx = max(0, len(self.piloto.crumbs) - 1)
                 self.dir_entrada = d_elegida
                 if accion == "izq":
                     self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo + math.pi / 2.0)
@@ -622,12 +636,36 @@ class PilotoGuiado:
             if mision is not None and mision.estado != SEGUIR:
                 mision.ir(SEGUIR, f"accion={accion}")
 
-        # Zanahoria local a 1.4 m en la direccion del pasillo elegido; Piloto aporta VFH-lite y migas
+        # Si estamos retrocediendo de un callejon, seguir las migas de vuelta al cruce anterior
         self.piloto.retorno = False
-        self.piloto.meta = (
-            pose[0] + 1.4 * math.cos(self.rumbo_pasillo),
-            pose[1] + 1.4 * math.sin(self.rumbo_pasillo),
-        )
+        if self.retrocediendo_hasta_idx is not None and len(self.piloto.crumbs) > self.retrocediendo_hasta_idx:
+            objetivo_cruce = self.piloto.crumbs[self.retrocediendo_hasta_idx]
+            if math.hypot(pose[0] - objetivo_cruce[0], pose[1] - objetivo_cruce[1]) < 0.45:
+                self.piloto.crumbs.prune_branch(self.retrocediendo_hasta_idx + 1, self._retroceso_fin_idx)
+                self.retrocediendo_hasta_idx = None
+                self.piloto.meta = (
+                    pose[0] + 1.4 * math.cos(self.rumbo_pasillo),
+                    pose[1] + 1.4 * math.sin(self.rumbo_pasillo),
+                )
+            else:
+                wp_idx = nc.pick_waypoint(
+                    self.piloto.crumbs, pose, r, a,
+                    upto=min(self._retroceso_upto, len(self.piloto.crumbs) - 1),
+                    lookahead=2.0, p=self.piloto.nav,
+                )
+                wp_idx = max(wp_idx, self.retrocediendo_hasta_idx)
+                while (wp_idx > self.retrocediendo_hasta_idx
+                       and math.hypot(pose[0] - self.piloto.crumbs[wp_idx][0],
+                                      pose[1] - self.piloto.crumbs[wp_idx][1]) < 0.25):
+                    wp_idx -= 1
+                self._retroceso_upto = wp_idx
+                self.piloto.meta = self.piloto.crumbs[wp_idx]
+        else:
+            # Zanahoria local a 1.4 m en la direccion del pasillo elegido; Piloto aporta VFH-lite y migas
+            self.piloto.meta = (
+                pose[0] + 1.4 * math.cos(self.rumbo_pasillo),
+                pose[1] + 1.4 * math.sin(self.rumbo_pasillo),
+            )
         lin, ang, info = self.piloto.paso(t, odom_pose, ranges, angles, bumper_hit=bumper_hit)
         info["llegada_b"] = False
         return lin, ang, info

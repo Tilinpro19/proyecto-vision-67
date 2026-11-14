@@ -178,3 +178,21 @@ def test_mision_guiada_retroceder_no_gira_en_bucle_en_el_mismo_sitio():
     # 2. Ya giro 180 deg a pi rad, pero sigue en (2.44, -0.43) con < 0.80 m al frente: NO debe re-decidir
     guiado.paso(13.5, (2.44, -0.43, math.pi), ranges_cerrado, angles, mision=m)
     assert len(m.decisiones) == 1
+
+
+def test_mision_guiada_retroceder_sigue_migas_de_vuelta_al_cruce():
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    angles = [math.radians(i * 10 - 180) for i in range(36)]
+    guiado.iniciar((0.0, 0.0, 0.0), [3.0] * 36, angles)
+    # Simular camino de entrada curvo rodeando un obstaculo (tacho) hasta (2.0, -0.7)
+    guiado.piloto.crumbs.extend([(0.5, 0.0), (0.9, 0.0), (1.3, -0.35), (1.7, -0.65), (2.0, -0.7)])
+    guiado.cruce_anterior_miga_idx = 2  # cruce previo en (0.9, 0.0)
+
+    ranges_cerrado = [0.55] * 36
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+    guiado.paso(10.0, (2.0, -0.7, 0.0), ranges_cerrado, angles, mision=m)
+    assert guiado.retrocediendo_hasta_idx == 2
+    # La meta debe apuntar a una miga del camino de regreso (y >= -0.65, x <= 1.7), no a (3.4, -0.7)
+    assert guiado.piloto.meta[0] <= 1.75
+    assert guiado.piloto.meta[1] >= -0.65
