@@ -25,6 +25,18 @@ import nav_core as nc  # noqa: E402
 CIRCUITOS = {
     "vacio": box(2.0, 0.0, 6.0, 4.0),
     "obstaculo": box(2.0, 0.0, 6.0, 4.0) + box(1.5, 0.0, 0.4, 0.4) + box(2.6, 1.0, 0.3, 0.6),
+    "laberinto": [
+        ((-0.8, -0.6), (-0.8, 0.6)),
+        ((-0.8, -0.6), (1.4, -0.6)),
+        ((-0.8, 0.6), (1.4, 0.6)),
+        ((1.4, -0.6), (1.4, -1.8)),
+        ((1.4, -1.8), (2.6, -1.8)),
+        ((2.6, -1.8), (2.6, 1.6)),
+        ((1.4, 0.6), (1.4, 2.8)),
+        ((1.4, 2.8), (4.4, 2.8)),
+        ((2.6, 1.6), (4.4, 1.6)),
+        ((4.4, 1.6), (4.4, 2.8)),
+    ],
 }
 N = 720
 
@@ -33,19 +45,53 @@ class RobotSimulado:
     """Nodo de prueba: timer a 20 Hz que integra /cmd_vel y publica /odom y /scan."""
 
     def __init__(self, node, circuito="obstaculo", deriva=0.03, verbose=True):
+        import cv2
         from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry
         from rclpy.qos import qos_profile_sensor_data
-        from sensor_msgs.msg import LaserScan
+        from sensor_msgs.msg import CompressedImage, LaserScan
 
-        self.Odometry, self.LaserScan, self.verbose = Odometry, LaserScan, verbose
+        self.cv2 = cv2
+        self.Odometry, self.LaserScan, self.CompressedImage = Odometry, LaserScan, CompressedImage
+        self.circuito, self.verbose = circuito, verbose
         self.sim = Sim(CIRCUITOS[circuito], yaw_drift=deriva)
         self.pub_scan = node.create_publisher(LaserScan, "/scan", qos_profile_sensor_data)
         self.pub_odom = node.create_publisher(Odometry, "/odom", qos_profile_sensor_data)
+        self.pub_cam = node.create_publisher(
+            CompressedImage, "/oakd/rgb/preview/image_raw/compressed", qos_profile_sensor_data
+        )
+        self.imgs_senales = self._cargar_senales() if circuito == "laberinto" else {}
         self.cmd = (0.0, 0.0, 0.0)
         node.create_subscription(Twist, "/cmd_vel", self._on_cmd, 10)
         self.dt, self.k, self.last_print = 0.05, 0, 0.0
         node.create_timer(self.dt, self._tick)
+
+    def _cargar_senales(self):
+        base_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "1_competencia", "tests", "data", "senales",
+        )
+        out = {}
+        for k, fn in (("izq", "flecha_izq.png"), ("der", "flecha_der.png"), ("bandera", "bandera_meta.png")):
+            p = os.path.join(base_dir, fn)
+            if os.path.isfile(p):
+                out[k] = self.cv2.imread(p)
+        return out
+
+    def _frame_laberinto(self):
+        x, y, th = self.sim.true
+        canvas = np.full((240, 320, 3), 185, dtype=np.uint8)
+        elegida = None
+        if 0.6 < x < 1.95 and abs(y) < 0.55 and abs(th) < 0.65:
+            elegida = self.imgs_senales.get("izq")
+        elif 1.4 < x < 2.6 and 0.8 < y < 2.15 and abs(th - math.pi / 2) < 0.65:
+            elegida = self.imgs_senales.get("der")
+        elif x > 3.1 and 1.6 < y < 2.8:
+            elegida = self.imgs_senales.get("bandera")
+        if elegida is not None:
+            patch = self.cv2.resize(elegida, (110, 110), interpolation=self.cv2.INTER_AREA)
+            canvas[65:175, 105:215] = patch
+        return canvas
 
     def _on_cmd(self, msg):
         self.cmd = (msg.linear.x, msg.angular.z, time.monotonic())
@@ -72,6 +118,13 @@ class RobotSimulado:
             sc.range_min, sc.range_max = 0.15, 12.0
             sc.ranges = ranges.astype(np.float32).tolist()
             self.pub_scan.publish(sc)
+        if self.circuito == "laberinto" and self.k % 4 == 0:  # ~5 Hz camara preview
+            ok, buf = self.cv2.imencode(".jpg", self._frame_laberinto(), [self.cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ok:
+                cm = self.CompressedImage()
+                cm.format = "jpeg"
+                cm.data = buf.tobytes()
+                self.pub_cam.publish(cm)
         self.k += 1
         if self.verbose and t - self.last_print > 2.0:
             self.last_print = t
