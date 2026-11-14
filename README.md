@@ -136,6 +136,8 @@ El día de la prueba, cuando entreguen la foto de la persona a identificar:
 cd ~/proyecto-vision-67/1_competencia
 # Captura 10 fotos con la cámara del robot apuntando a la fotografía:
 ./capturar_persona.sh Juan_Perez 10
+# Verifica precisión leave-one-out sobre la galería cargada:
+python3 facial.py --probar
 ```
 
 #### 3.4 Ejecutar la Tarea A (Navegación Autónoma)
@@ -253,6 +255,22 @@ Si el robot entra en una trampa en "U" o callejón cóncavo frontal ($\pm 40^\ci
 4. `VOLVER_A_A`: Retorno acelerado por las migas optimizadas con corrección ICP.
 5. `ANUNCIAR`: Al llegar a $A$, sintetiza el nombre de la persona en voz alta y publica en `/nombre_reconocido`.
 6. `FIN`: Frenado completo y cálculo de tiempo oficial y penalizaciones.
+
+### 3.7. Reconocimiento Facial Offline y Anuncio (`1_competencia/facial.py`)
+El módulo de visión opera **100% offline** usando modelos ONNX de OpenCV Zoo almacenados en `1_competencia/modelos/`:
+1. **Detección (`YuNet` — `face_detection_yunet_2023mar.onnx`):** Si el *preview* de la cámara OAK-D es pequeño ($<480\text{ px}$), se reescala con interpolación bicúbica (`MIN_SIDE = 480`) y se filtran detecciones con confianza $\ge 0.6$ (`SCORE_MIN`).
+2. **Filtro de calidad (`calidad`):** Cada rostro recortado se puntúa combinando confianza, área del rostro y nitidez por varianza del Laplaciano, descartando *frames* movidos o borrosos.
+3. **Embeddings y clasificación (`SFace` — `face_recognition_sface_2021dec.onnx`):** Extrae un vector normalizado de 128 dimensiones, promedia los **3 mejores *frames*** (`TOP_FRAMES = 3`) y los compara por **similitud coseno** contra la galería (`galeria/<Nombre_Persona>/*.jpg`).
+   - Se acepta la identidad si la similitud supera `UMBRAL = 0.363` y mantiene una ventaja mínima de `MARGEN = 0.04` sobre el segundo candidato (`seguro = True`).
+4. **Caché rápida (`galeria/.cache.npz`):** Al cargar fotos nuevas el día de la competencia, los embeddings se guardan en caché para que los siguientes arranques tarden segundos.
+5. **Anuncio al regresar a $A$ (`Anunciador` / `Voz`):** Sintetiza el nombre por voz (`espeak-ng` / `spd-say`) y lo publica en el tópico ROS 2 `/nombre_reconocido` (reemplazando `_` por espacio).
+
+```bash
+# Comandos útiles de prueba:
+python3 1_competencia/facial.py --probar            # validación leave-one-out de la galería
+python3 1_competencia/facial.py --robot             # reconocimiento en vivo con la OAK-D
+python3 1_competencia/facial.py --img foto1.jpg     # probar con imágenes sueltas
+```
 
 ---
 
