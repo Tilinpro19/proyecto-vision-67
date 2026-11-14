@@ -20,6 +20,7 @@ services:
       - QT_X11_NO_MITSHM=1
     volumes:
       - ..:/ws          # el codigo del proyecto
+      - ../fastdds_pc.xml:/opt/tb4/fastdds_pc.xml:ro  # perfil unico FastDDS desde la raiz
       - ./tb4lib:/opt/tb4/tb4lib               # la libreria en modo editable
       - /tmp/.X11-unix:/tmp/.X11-unix          # ventanas OpenCV / RViz / rqt
       - ${XDG_RUNTIME_DIR:-/tmp}:/tmp/xdg

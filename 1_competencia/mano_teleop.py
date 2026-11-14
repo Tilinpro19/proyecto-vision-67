@@ -13,7 +13,7 @@ frames -> gesto.
 
 La ventana muestra tu webcam (izquierda) y la camara OAK-D del robot (derecha).
 
-Requiere mediapipe (pip) y el modelo hand_landmarker.task junto a este script.
+Requiere mediapipe (pip) y el modelo modelos/hand_landmarker.task.
 
 Uso (WSL o Ubuntu, laptop en la red del robot, tras 'source tb4_connect.sh'):
   python3 mano_teleop.py --dry           # solo ver gestos, NO publica (probar primero)
@@ -63,7 +63,7 @@ LOST_FRAMES_MAX = 3     # frames sin mano (p. ej. desenfoque al moverla rapido)
 
 # Modelo de MediaPipe junto al script: el laboratorio no tiene internet.
 # https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
-HAND_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_landmarker.task")
+HAND_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modelos", "hand_landmarker.task")
 MIN_HAND_CONFIDENCE = 0.6  # sube si aparecen manos falsas, baja si la pierde mucho
 HAND_MARGIN_PX = 20        # los puntos de MediaPipe son articulaciones: se agranda
                            # el contorno para cubrir el borde de los dedos

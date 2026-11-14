@@ -12,7 +12,11 @@ mode="${TB4_MODE:-auto}"
   echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp"
   if [ "$mode" = peers ] && [ -n "$TB4_IP" ]; then
     echo "export ROS_STATIC_PEERS=$TB4_IP"
-    echo "export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/tb4/fastdds_pc.xml"
+    if [ -f /ws/fastdds_pc.xml ]; then
+      echo "export FASTRTPS_DEFAULT_PROFILES_FILE=/ws/fastdds_pc.xml"
+    else
+      echo "export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/tb4/fastdds_pc.xml"
+    fi
   fi
 } > /tmp/tb4_env
 source /tmp/tb4_env

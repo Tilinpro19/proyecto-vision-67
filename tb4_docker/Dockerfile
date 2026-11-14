@@ -32,7 +32,6 @@ RUN if [ "$WITH_MEDIAPIPE" = 1 ]; then \
       || echo "AVISO: mediapipe NO quedo instalado (gestos no funcionaran)"; \
     fi
 
-COPY fastdds_pc.xml /opt/tb4/fastdds_pc.xml
 COPY tb4lib /opt/tb4/tb4lib
 RUN pip3 install --no-cache-dir -e /opt/tb4/tb4lib
 
