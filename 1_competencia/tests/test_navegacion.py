@@ -1,7 +1,7 @@
 """Escenarios de la Tarea A sin robot: scans simulados (pasillo, esquina, callejon,
 obstaculo bajo, pared lateral) y misiones completas A -> B -> A en el simulador.
 
-Correr desde proyecto_final/:  python3 -m pytest 1_competencia/tests -v
+Correr desde la raiz del repo:  python3 -m pytest 1_competencia/tests -v
 """
 import math
 

@@ -31,7 +31,7 @@ Este documento consolida los principales desafíos de ingeniería resueltos dura
   - Como consecuencia, el búfer serie del RPLIDAR (`/dev/ttyUSB0`) desbordaba por falta de atención de CPU, y los comandos de velocidad `/cmd_vel` sufrían retardos superiores a 500 ms, disparando el freno de emergencia automático del Create 3.
 
 ### Solución Implementada: Arquitectura Reactiva Liviana (*Edge Execution*)
-- Se reemplazó el planificador pesado por un pipeline reactivo optimizado (**VFH-lite + migas de pan + ICP 2D** en [`nav_core.py`](file:///C:/Users/mando/turtleclaude4/proyecto_final/1_competencia/nav_core.py)).
+- Se reemplazó el planificador pesado por un pipeline reactivo optimizado (**VFH-lite + migas de pan + ICP 2D** en [`nav_core.py`](../1_competencia/nav_core.py)).
 - **Métricas de Rendimiento:**
   - Consumo de CPU a bordo: **< 5% de un solo núcleo** (reducción del 95%).
   - Memoria RAM: $< 35\text{ MB}$.

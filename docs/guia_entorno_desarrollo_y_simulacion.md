@@ -50,9 +50,8 @@ git clone https://github.com/Tilinpro19/proyecto-vision-67.git ~/proyecto-vision
 
 Antes de tocar el robot físico, toda la lógica algorítmica debe pasar las 62 pruebas unitarias.
 
-Ejecuta desde `~/turtleclaude4/proyecto_final`:
+Ejecuta desde la raíz del repositorio:
 ```bash
-cd ~/turtleclaude4/proyecto_final
 python3 -m pytest 1_competencia/tests -v
 ```
 
@@ -73,14 +72,14 @@ El repositorio incluye un simulador cinemático completo (`robot_simulado.py`) q
 
 ### Paso 1: Levantar el Robot Simulado (Terminal 1)
 ```bash
-cd ~/turtleclaude4/proyecto_final/2_laboratorio
+cd 2_laboratorio
 python3 robot_simulado.py --circuito laberinto
 ```
 *(Se abrirá una ventana mostrando el mapa, el robot virtual y los rayos LiDAR trazados en tiempo real).*
 
 ### Paso 2: Lanzar la Misión Autónoma (Terminal 2)
 ```bash
-cd ~/turtleclaude4/proyecto_final/1_competencia
+cd 1_competencia
 ./tarea_a.sh --goal 3.0 1.0 --ver
 ```
 Verás al TurtleBot virtual:
@@ -94,14 +93,14 @@ Verás al TurtleBot virtual:
 
 ### 5.1 Probar la Galería de Rostros
 ```bash
-cd ~/turtleclaude4/proyecto_final/1_competencia
+cd 1_competencia
 python3 facial.py --probar
 ```
 Valida que el modelo YuNet + SFace cargue correctamente los pesos `.onnx` y evalúa la galería de prueba.
 
 ### 5.2 Probar el Control Gestual con tu Mano
 ```bash
-cd ~/turtleclaude4/proyecto_final/1_competencia
+cd 1_competencia
 python3 mano_teleop.py --probar
 ```
 Abre tu webcam de la laptop:

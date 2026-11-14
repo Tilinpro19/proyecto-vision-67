@@ -48,7 +48,7 @@ Desde la carpeta raíz del repositorio técnico (`~/turtleclaude4`):
 ```
 Este script realiza automáticamente:
 1. Prueba de ping y conexión SSH.
-2. Sincronización `rsync` de `proyecto_final` y `tb4lib`.
+2. Sincronización `rsync` de `1_competencia`, `2_laboratorio`, `scripts` y `tb4lib`.
 3. Instalación de la librería `tb4lib` en Python de la Raspberry Pi.
 4. Sincronización del reloj de la laptop con la Pi y el Create 3.
 5. Creación de los ejecutables on-board (`tarea_a_onboard.sh` y `tarea_b_onboard.sh`).
@@ -62,13 +62,13 @@ Este script realiza automáticamente:
 #### Opción 1: Ejecución A Bordo del Robot (Recomendada para la Competencia)
 Inmune a caídas de cable o interferencias de Wi-Fi:
 ```bash
-ssh ubuntu@192.168.185.3 "cd ~/turtleclaude4/proyecto_final/1_competencia && ./tarea_a_onboard.sh --goal 3.0 0.0"
+ssh ubuntu@192.168.185.3 "cd ~/turtleclaude4/1_competencia && ./tarea_a_onboard.sh --goal 3.0 0.0"
 ```
 
 #### Opción 2: Ejecución desde la Laptop (Con Ventana Gráfica de Depuración)
 Permite visualizar la cámara OAK-D Lite y la telemetría en tiempo real:
 ```bash
-cd ~/turtleclaude4/proyecto_final/1_competencia
+cd 1_competencia
 ./tarea_a.sh --goal 3.0 0.0 --ver
 ```
 
@@ -83,7 +83,7 @@ cd ~/turtleclaude4/proyecto_final/1_competencia
 
 Desde la laptop con la webcam apuntando al operador:
 ```bash
-cd ~/turtleclaude4/proyecto_final/1_competencia
+cd 1_competencia
 ./tarea_b.sh --cam 0 --lineal 0.20
 ```
 - **Armado:** Mostrar la palma abierta firme frente a la cámara por 2 segundos.

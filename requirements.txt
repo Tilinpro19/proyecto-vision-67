@@ -1,0 +1,9 @@
+# Dependencias Python para desarrollo y pruebas fuera de ROS 2 apt
+# En Ubuntu / WSL con ROS 2 Jazzy, OpenCV y NumPy suelen venir de apt:
+#   sudo apt install -y python3-opencv python3-numpy python3-pytest
+# Si usas MediaPipe junto a cv_bridge/apt, instala numpy<2 (ver tb4_docker/Dockerfile).
+
+numpy
+opencv-python
+mediapipe
+pytest

@@ -1,9 +1,9 @@
 # Traspaso del proyecto · TurtleBot 4 Lite
 
 Guía para seguir trabajando el robot. Primero los **pasos a seguir** (sección 1); el resto es referencia.
-Más detalle: `README.md` (flujo diario), `DESCUBRIMIENTOS.md` (trampas), `TROUBLESHOOTING.md`, `proyecto_final/README.md`.
+Más detalle: `README.md` (flujo diario), `DESCUBRIMIENTOS.md` (trampas), `TROUBLESHOOTING.md`, `docs/metodos_y_justificacion.md`.
 
-**Entrega: 22 de noviembre de 2026.** Lineamientos: `proyecto_final/docs/lineamientos_proyecto_final.pdf`.
+**Entrega: 22 de noviembre de 2026.** Lineamientos: `docs/lineamientos_competencia.md`.
 
 ---
 
@@ -16,7 +16,7 @@ Esta carpeta (`paquete_proyecto_final`) es una copia completa del trabajo. Los s
 ```bash
 cp -r /mnt/c/RUTA/A/paquete_proyecto_final ~/turtleclaude4
 cd ~/turtleclaude4
-chmod +x *.sh proyecto_final/1_competencia/*.sh proyecto_final/2_laboratorio/*.sh
+chmod +x *.sh scripts/*.sh 1_competencia/*.sh 2_laboratorio/*.sh
 python3 -c "import cv2, mediapipe, numpy; print('deps OK')"
 ```
 
@@ -36,7 +36,7 @@ Todo debe correr sin errores antes de tocar el robot real.
 
 ### Paso 2 · Cargar la galería real de caras
 
-En `proyecto_final/1_competencia/galeria/` crear **una carpeta por persona** (el nombre de la carpeta es lo que dice el robot; `_` se lee como espacio): `Juan_Perez/foto1.jpg`, `foto2.jpg`…
+En `1_competencia/galeria/` crear **una carpeta por persona** (el nombre de la carpeta es lo que dice el robot; `_` se lee como espacio): `Juan_Perez/foto1.jpg`, `foto2.jpg`…
 Si solo dan la foto impresa, capturarla con la cámara del robot:
 `python3 facial.py --capturar Juan_Perez --n 15`. Luego `python3 facial.py --probar` (avisa fotos sin cara).
 
@@ -52,20 +52,20 @@ Si solo dan la foto impresa, capturarla con la cámara del robot:
 4. Verificar:
    ```bash
    ./tb4_check.sh 192.168.0.104
-   python3 chequeo_reloj_tb4.py
+   python3 scripts/chequeo_reloj_tb4.py
    ```
    Debes ver `/scan`, `/odom`, cámara y reloj coherente. Si no, ir a la sección 4.
 
 ### Paso 4 · Hora persistente (una sola vez por robot)
 
 Sin esto la Pi vuelve a 2025 en cada arranque y SLAM/TF fallan.
-- En la laptop: `./configurar_sync_automatico.sh` (clave SSH + sudo sin clave solo para fijar la hora).
-- En la Pi: copiar y correr `instalar_hora_persistente.sh`.
+- En la laptop: `./scripts/configurar_sync_automatico.sh` (clave SSH + sudo sin clave solo para fijar la hora).
+- En la Pi: copiar y correr `scripts/instalar_hora_persistente.sh`.
 
 ### Paso 5 · Tarea A (autónoma) en el robot real
 
 ```bash
-cd ~/turtleclaude4/proyecto_final/1_competencia
+cd 1_competencia
 ./tarea_a.sh --goal 3.0 0.5          # B a 3 m al frente y 0.5 m a la izquierda de A
 ```
 
@@ -140,7 +140,7 @@ Los módulos de `1_competencia/` se importan entre sí: mantenerlos en la misma 
 | `Unable to open file …task` o script desactualizado | La copia de WSL no tiene el archivo/modelo: volver a hacer `cp` (Paso 0). |
 | La Pi va lenta con SLAM + Nav2 | Tarea A es reactiva (sin SLAM). Si hace falta Nav2: `aligerar_nav2_robot.sh` (**sin probar en robot**) y `levantar_mapa_robot.sh nav2`, siempre dentro de `tmux`. |
 
-Diagnóstico completo: `diagnostico_tb4.py` (laptop), `diag_robot.sh` (robot). Detalle en `DESCUBRIMIENTOS.md` y `TROUBLESHOOTING.md`.
+Diagnóstico completo: `scripts/diagnostico_tb4.py` (laptop), `scripts/diag_robot.sh` (robot). Detalle en `DESCUBRIMIENTOS.md` y `TROUBLESHOOTING.md`.
 
 ## 5. Datos fijos
 
@@ -148,7 +148,7 @@ Diagnóstico completo: `diagnostico_tb4.py` (laptop), `diag_robot.sh` (robot). D
 - Pi: Wi-Fi `192.168.0.104` · cable `192.168.185.3` (laptop por cable: `192.168.185.10/24`, sin gateway).
 - El Create 3 **no tiene sensores atrás**: retroceder despacio.
 - El lab es una LAN **sin internet** con 3 robots: cada uno con su `ROS_DOMAIN_ID` y hostname; cámara siempre por `/compressed`.
-- Mando PS4/PS5 (solo pruebas, **no en competencia**): emparejar en la Pi con `scan off` antes de `pair`; ver `mando.md`.
+- Mando PS4/PS5 (solo pruebas, **no en competencia**): emparejar en la Pi con `scan off` antes de `pair`; ver `docs/mando.md`.
 
 ## 6. Objetivos opcionales (no necesarios para la entrega)
 

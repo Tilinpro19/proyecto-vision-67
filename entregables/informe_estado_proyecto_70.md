@@ -76,7 +76,7 @@ Dado que las colisiones físicas conllevan penalizaciones drásticas en el punta
 
 ## 4. Estado de Verificación y Pruebas Unitarias
 
-La suite de pruebas automatizadas en `proyecto_final/1_competencia/tests/` arrojó el siguiente resultado:
+La suite de pruebas automatizadas en `1_competencia/tests/` arrojó el siguiente resultado:
 
 ```
 ========================= 62 passed, 1 skipped in 11.23s =========================

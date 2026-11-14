@@ -33,16 +33,16 @@ Contexto fijo: TB4 Lite, ROS 2 Jazzy, Fast DDS, `ROS_DOMAIN_ID=67`, Pi en `wlan0
 - **Trampa:** un salto pequeño en la Pi deja al Create 3 atrasado unos minutos y es peor que no tocar nada. Solo se corrige un desfase enorme (> 1 h). El Create 3 copia la hora de la Pi con retraso: esperar o reiniciar su app.
 - **Mitigaciones en el repo:**
   - `source tb4_connect.sh --hora`: copia la hora de la laptop a la Pi por SSH; avisa si el desfase pasa de 2 s (`TB4_NOSYNC=1` lo omite).
-  - `instalar_hora_persistente.sh` (en la Pi): guarda la hora cada 5 min y la restaura al arrancar.
-  - `configurar_sync_automatico.sh` (en la laptop, una vez): clave SSH + sudo sin clave solo para `date -u -s` y reiniciar `turtlebot4.service`.
-  - `chequeo_reloj_tb4.py [--esperar]`: mide el desfase `/scan` vs `/odom`.
+  - `scripts/instalar_hora_persistente.sh` (en la Pi): guarda la hora cada 5 min y la restaura al arrancar.
+  - `scripts/configurar_sync_automatico.sh` (en la laptop, una vez): clave SSH + sudo sin clave solo para `date -u -s` y reiniciar `turtlebot4.service`.
+  - `scripts/chequeo_reloj_tb4.py [--esperar]`: mide el desfase `/scan` vs `/odom`.
 
 ## 3. SLAM y navegación
 
 - **La Pi se satura:** SLAM + Nav2 juntos en la RPi4 dan `queue is full`. Usar solo SLAM (`slam_toolbox` asíncrono) salvo que haga falta el click-para-navegar; Nav2 aparte con `levantar_mapa_robot.sh nav2`.
 - **El SSH se corta y mata SLAM:** lanzarlo dentro de `tmux`.
 - **Qué falta si `/scan` u `/odom` no existen:** reiniciar `turtlebot4.service`.
-- **Diagnóstico de "por qué no sigue la ruta":** `diagnostico_tb4.py` (laptop) mide frecuencias, retrasos de TF, `/cmd_vel` pedido vs real y estado de Nav2; `diag_robot.sh` (robot) registra CPU, temperatura, *throttling* y estado del Create 3.
+- **Diagnóstico de "por qué no sigue la ruta":** `scripts/diagnostico_tb4.py` (laptop) mide frecuencias, retrasos de TF, `/cmd_vel` pedido vs real y estado de Nav2; `scripts/diag_robot.sh` (robot) registra CPU, temperatura, *throttling* y estado del Create 3.
 - **Visor del mapa:** `ver_mapa_tb4.py` dibuja `/map`, el robot y un plan Dijkstra local al hacer click; con `--goto` manda la meta a Nav2.
 - **Qué NO está probado:** `ver_mapa_tb4.py` se probó contra un robot simulado, no contra SLAM/Nav2 reales; `levantar_mapa_robot.sh` solo se verificó sintácticamente.
 - Guías: `docs/guia_reset_conexion.md`, `docs/guia_occupancy_grid.md`, `docs/guia_completa_occupancy_grid.md`, `docs/guia_subir_script_robot.md`.
@@ -54,7 +54,7 @@ Contexto fijo: TB4 Lite, ROS 2 Jazzy, Fast DDS, `ROS_DOMAIN_ID=67`, Pi en `wlan0
 - **Arreglo:** `bluetoothctl remove <MAC>`, borrar la caché en `/var/lib/bluetooth/.../cache/`, poner `ClassicBondedOnly=false` en `/etc/bluetooth/input.conf`, reiniciar `bluetooth`, y emparejar con **`scan off` antes de `pair`**.
 - `joy` corre en la Pi (no en WSL, donde `usbipd`/`joydev` es un lío) y sigue funcionando si cae el Wi-Fi.
 - La MAC del adaptador de la Pi no se usa en `pair`. Un mando se empareja con un solo dispositivo a la vez.
-- Detalle y pendientes en `mando.md`.
+- Detalle y pendientes en `docs/mando.md`.
 
 ## 5. Visión (`seguimiento_vision/`)
 

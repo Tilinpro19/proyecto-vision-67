@@ -26,8 +26,8 @@ Todo el trabajo algorítmico, arquitectónico y de despliegue ya fue implementad
 | **Coordinador de Misión (`mision.py`)** | ✅ Máquina de estados completa (`ESPERA → IR_A_B → ESCANEAR → VOLVER_A_A → ANUNCIAR → FIN`), cronómetro y métricas de puntaje. | `tests/test_mision.py` y `tarea_a.sh`. | Validar detección de llegada al punto $B$ según criterio del docente. |
 | **Reconocimiento Facial (`facial.py`)** | ✅ YuNet (detección) + SFace (embeddings) en ONNX offline con filtro de nitidez por Laplaciano y anuncio por voz. | `python3 facial.py --probar` | Cargar las fotos de las personas en `galeria/` cuando se revelen. |
 | **Control Gestual Tarea B (`gestos_teleop.py`)** | ✅ Clasificador de manos MediaPipe con evaluación angular por articulaciones MCP, armado/parado por gestos sin teclado. | `python3 gestos_teleop.py --laptop` | Ensayar con la persona que hará los gestos frente a la cámara. |
-| **Sincronización Create 3 ↔ Pi** | ✅ Resuelto el desfase de 20.9 horas mediante sincronización directa HTTP API (`POST /api/restart-ntpd`) y scripts persistentes. | `chequeo_reloj_tb4.py` | Ejecutar al encender el robot en cada sesión de laboratorio. |
-| **Despliegue On-Board (*Edge Execution*)** | ✅ Scripts y lanzadores a bordo (`tarea_a_onboard.sh`) instalados en la Pi; 0 ms latencia y 0% riesgo por caídas de Wi-Fi. | `desplegar_en_robot.sh` | Usar preferentemente en los intentos puntuados de la competencia. |
+| **Sincronización Create 3 ↔ Pi** | ✅ Resuelto el desfase de 20.9 horas mediante sincronización directa HTTP API (`POST /api/restart-ntpd`) y scripts persistentes. | `scripts/chequeo_reloj_tb4.py` | Ejecutar al encender el robot en cada sesión de laboratorio. |
+| **Despliegue On-Board (*Edge Execution*)** | ✅ Scripts y lanzadores a bordo (`tarea_a_onboard.sh`) instalados en la Pi; elimina la latencia de red y es inmune a caídas de Wi-Fi. | `desplegar_en_robot.sh` | Usar preferentemente en los intentos puntuados de la competencia. |
 | **Dockerización Completa** | ✅ Entorno listo con Dockerfile y docker-compose en [`tb4_docker/`](tb4_docker/); monta el repo y no requiere instalar ROS 2 en la PC. | `docker compose run --rm tb4` | Listo para usar si alguien del equipo no tiene ROS 2 configurado. |
 
 ---
@@ -126,7 +126,7 @@ source tb4_connect.sh --hora
 ```
 Verifica que los relojes de la Pi y el Create 3 estén alineados (<0.2 s):
 ```bash
-python3 chequeo_reloj_tb4.py
+python3 scripts/chequeo_reloj_tb4.py
 ./tb4_check.sh 192.168.185.3
 ```
 
@@ -140,9 +140,9 @@ cd ~/proyecto-vision-67/1_competencia
 
 #### 3.4 Ejecutar la Tarea A (Navegación Autónoma)
 
-**Modalidad 1: A Bordo del Robot (*Edge Execution* - 0 ms latencia, inmune a desconexiones de Wi-Fi):**
+**Modalidad 1: A Bordo del Robot (*Edge Execution* - elimina la latencia de red, inmune a desconexiones de Wi-Fi):**
 ```bash
-ssh ubuntu@192.168.185.3 "cd ~/turtleclaude4/proyecto_final/1_competencia && ./tarea_a_onboard.sh --goal 3.0 0.5"
+ssh ubuntu@192.168.185.3 "cd ~/turtleclaude4/1_competencia && ./tarea_a_onboard.sh --goal 3.0 0.5"
 ```
 
 **Modalidad 2: Desde la Laptop (con ventana OpenCV en vivo):**
@@ -293,14 +293,20 @@ proyecto-vision-67/
 ├── HANDOFF_PROYECTO_FINAL.md           # Guía rápida de traspaso operacional
 ├── DESCUBRIMIENTOS.md                  # Bitácora de trampas de hardware, reloj y DDS
 ├── TROUBLESHOOTING.md                  # Solución rápida a fallos de conexión y sensores
+├── Makefile                            # Atajos para WSL/Ubuntu (test, sim, check, deploy, stop)
+├── requirements.txt                    # Dependencias Python de desarrollo
 ├── desplegar_en_robot.sh               # Script maestro para sincronizar código a la Pi por rsync
 ├── tb4_connect.sh                      # Configura FastDDS, dominio y sincroniza hora (--hora)
 ├── tb4_check.sh                        # Diagnóstico en vivo de tópicos, frecuencias y reloj
-├── chequeo_reloj_tb4.py                # Compara marcas temporales /scan vs /odom
 ├── fastdds_pc.xml                      # Perfil Fast DDS de 100 participantes (evita tópicos ocultos)
-├── diagnostico_tb4.py                  # Diagnóstico integral de hardware y red desde la PC
-├── diag_robot.sh                       # Diagnóstico integral a bordo de la Raspberry Pi
 ├── parar.sh                            # Freno de emergencia inmediato
+│
+├── scripts/                            # Herramientas de diagnóstico y sincronización de reloj
+│   ├── chequeo_reloj_tb4.py            # Compara marcas temporales /scan vs /odom
+│   ├── diagnostico_tb4.py              # Diagnóstico integral de hardware y red desde la PC
+│   ├── diag_robot.sh                   # Diagnóstico integral a bordo de la Raspberry Pi
+│   ├── configurar_sync_automatico.sh   # Configura SSH + sudo sin clave para sincronizar hora
+│   └── instalar_hora_persistente.sh    # Servicio en la Pi para restaurar hora tras apagón
 │
 ├── 1_competencia/                      # Código fuente de las tareas evaluadas
 │   ├── nav_core.py                     # Algoritmo matemático puro VFH-lite, KDTree, ICP y rampas
@@ -313,9 +319,9 @@ proyecto-vision-67/
 │   ├── tarea_b.sh                      # Lanzador Tarea B (gestos)
 │   ├── capturar_persona.sh             # Script rápido para cargar fotos a la galería
 │   ├── config.json                     # Parámetros cinemáticos y de seguridad
-│   ├── modelos/                        # Redes neuronales ONNX (YuNet y SFace)
+│   ├── modelos/                        # Modelos offline (YuNet, SFace y hand_landmarker.task)
 │   ├── galeria/                        # Base de datos de rostros conocidos
-│   └── tests/                          # Suite de 62 pruebas unitarias automatizadas
+│   └── tests/                          # Suite de pruebas unitarias automatizadas
 │
 ├── 2_laboratorio/                      # Herramientas de laboratorio y simulación
 │   ├── robot_simulado.py               # Simulador 2D de Create 3 + LiDAR con interfaz gráfica
@@ -332,10 +338,14 @@ proyecto-vision-67/
 │
 ├── docs/                               # Documentación complementaria y manuales
 │   ├── arquitectura_sistema.md         # Diagrama detallado de software
+│   ├── metodos_y_justificacion.md      # Métodos implementados y justificación técnica
 │   ├── guia_acceso_y_conexion_robot.md # Guía de redes y conexión física
+│   ├── guia_conexion_turtlebot4.md     # Guía rápida de conexión y red del laboratorio
 │   ├── guia_entorno_desarrollo_y_simulacion.md # Configuración de WSL y simulador
 │   ├── lineamientos_competencia.md     # Reglas y fórmulas de evaluación
-│   └── resolucion_problemas_tecnicos.md # Detalle de soluciones a cuellos de botella
+│   ├── mando.md                        # Emparejamiento de mando PS4/PS5 en la Pi
+│   ├── resolucion_problemas_tecnicos.md # Detalle de soluciones a cuellos de botella
+│   └── tarjeta_offline_lab.md          # Referencia rápida sin internet en el laboratorio
 │
 ├── bitacora/                           # Bitácora semanal de avance
 │   ├── semana-01.md                    # Semana 1: Estructura inicial

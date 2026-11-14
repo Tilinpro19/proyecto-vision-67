@@ -1,7 +1,7 @@
 """Pruebas de nav_core sin robot: scans sinteticos (trazado de rayos contra segmentos) y,
 si existen, los scans reales grabados en 1_competencia/scans/*.npz.
 
-Correr desde proyecto_final/:  python3 -m pytest 1_competencia/tests -v
+Correr desde la raiz del repo:  python3 -m pytest 1_competencia/tests -v
 """
 import glob
 import math
