@@ -415,6 +415,8 @@ def buscar_candidatos(img, area_min_frac=0.0015):
     out = []
     for c in cs:
         x, y, w, h = cv2.boundingRect(c)
+        if w >= int(0.95 * W) and h >= int(0.95 * H):
+            continue
         if w * h >= area_min_frac * H * W and 0.35 <= (w / float(h)) <= 2.8:
             crop = gray[y:y + h, x:x + w]
             if float(crop.std()) >= 8.0:

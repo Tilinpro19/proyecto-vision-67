@@ -134,3 +134,42 @@ def test_cero_falsos_positivos_en_patrones_regulares():
         rayas_h[y:y + 10, :] = 25
     for im in (rayas_v, rayas_h):
         assert sf.detectar(im) == []
+
+
+def test_cero_falsos_positivos_en_texturas_pared_y_baldosas():
+    rng = np.random.default_rng(7)
+    gx = np.linspace(140, 200, 640, dtype=np.float32)[None, :, None]
+    pared = np.clip(gx + rng.normal(0, 6.0, (480, 640, 3)), 0, 255).astype(np.uint8)
+    baldosas = np.full((480, 640, 3), 210, dtype=np.uint8)
+    baldosas[::70, :] = 140
+    baldosas[:, ::70] = 140
+    ruido = rng.integers(80, 210, size=(480, 640, 3), dtype=np.uint8)
+
+    for im in (pared, baldosas, ruido):
+        assert sf.detectar(im) == []
+
+    pared_250 = cv2.resize(pared, (250, 187), interpolation=cv2.INTER_AREA)
+    baldosas_250 = np.full((187, 250, 3), 210, dtype=np.uint8)
+    baldosas_250[::35, :] = 140
+    baldosas_250[:, ::35] = 140
+    assert sf.buscar_candidatos(pared_250) == []
+    assert sf.buscar_candidatos(baldosas_250) == []
+
+
+def test_tiempo_deteccion_acotado():
+    import time
+    base = cv2.imread(os.path.join(DATA_SENALES, "flecha_izq.png"), cv2.IMREAD_GRAYSCALE)
+    escena_640 = _escena_forma(base, dist_m=1.1, ancho_px=640, yaw_deg=0.0, blur_px=2, ruido=3.0)
+    escena_250 = cv2.resize(escena_640, (250, 187), interpolation=cv2.INTER_AREA)
+
+    t0 = time.perf_counter()
+    cands = sf.buscar_candidatos(escena_250)
+    dt_buscar_ms = (time.perf_counter() - t0) * 1000.0
+    assert len(cands) >= 1
+    assert dt_buscar_ms < 15.0
+
+    t1 = time.perf_counter()
+    res = sf.detectar(escena_640, esfuerzo_qr=1)
+    dt_det_ms = (time.perf_counter() - t1) * 1000.0
+    assert len(res) >= 1 and res[0].tipo == "izq"
+    assert dt_det_ms < 150.0
