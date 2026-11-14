@@ -158,6 +158,7 @@ class Piloto:
             # no avanzar mientras se gira; girar en el sitio hasta despejar el frente.
             eff_free = min(free, info["front"])
             lin, ang = nc.speed_command(h, eff_free, pp.max_linear, pp.max_angular, nav)
+            lin *= nc.side_scale(r, a, nav)   # mas despacio con poca holgura lateral
 
             # Reduccion suave muy cerca de la meta final (ultimos 40 cm) para no pasarse
             if dist < 0.40 and not self.escape:
@@ -303,6 +304,7 @@ class Lidar:
         self.rot = math.radians(rot_deg)
         self.mask = mask  # (centro_deg, medio_ancho_deg, r_max_m) o None; ver nc.mask_sector
         self.data = None
+        self.extra = None   # f(t, r, a) -> (r, a): une puntos extra (guardian de profundidad)
         self.last_t = 0.0
         node.create_subscription(LaserScan, topic, self._on_scan, qos_profile_sensor_data)
 
@@ -313,6 +315,8 @@ class Lidar:
         if self.mask:
             self.data = nc.mask_sector(*self.data, *self.mask)
         self.last_t = time.monotonic()
+        if self.extra is not None:
+            self.data = self.extra(self.last_t, *self.data)
 
     def fresh(self, max_age=0.6):
         return self.data is not None and time.monotonic() - self.last_t < max_age

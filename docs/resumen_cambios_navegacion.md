@@ -38,20 +38,28 @@ En la rama `main` (`https://github.com/Tilinpro19/proyecto-vision-67`):
 
 ### E. Diagnóstico `.npz` en atascos y choques (`1_competencia/mision.py`)
 - **Problema:** Con solo el `.log` y el `.json` no se podía distinguir si un `"atasco con frente libre"` tras un giro era un obstáculo bajo real o un falso positivo del detector de atasco.
-- **Solución:** `Mision.guardar_diagnostico` guarda `t`, `pose`, `ranges`, `angles` y `crumbs` en `logs/*.npz` automáticamente cuando `comunes` detecta un choque (`choque_LiDAR` / `choque_bumper`) o cuando `_volcar_eventos_piloto` recibe un evento de `"atasco"` ([`1_competencia/mision.py`](../1_competencia/mision.py#L148-L164), [`1_competencia/mision.py`](../1_competencia/mision.py#L392-L423)).
+- **Solución:** `Mision.guardar_diagnostico` guarda `t`, `pose`, `ranges`, `angles` y `crumbs` en `logs/*.npz` automáticamente cuando `comunes` detecta un choque (`choque_LiDAR` / `choque_bumper`) o cuando `_volcar_eventos_piloto` recibe un evento de `"atasco"` ([`1_competencia/mision.py`](../1_competencia/mision.py#L148-L164), [`1_competencia/mision.py`](../1_competencia/mision.py#L392-L433)).
+
+### F. Guardián de profundidad OAK-D bajo demanda (`1_competencia/profundidad.py`, `1_competencia/mision.py`, `1_competencia/navegacion.py`)
+- **Problema:** Los `.npz` mostraron que los atascos con frente libre ocurrían frente a obstáculos por debajo del plano del LiDAR (bases/patas de sillas), pero suscribirse permanentemente a `/oakd/stereo/image_raw` cuesta ~37% de un núcleo por transporte DDS.
+- **Solución:**
+  - `GuardianProfundidad` se suscribe solo bajo demanda en zonas estrechas (paredes a `< 0.70 m` a ambos lados o algo a `< 1.0 m` al frente) o tras un atasco (`forzar()`), con histéresis de `8 s` antes de soltar la suscripción.
+  - Crea el nodo ROS en un hilo propio para no bloquear el lazo de control (peor llamada ~1.3 ms) y proyecta la franja de `5 cm` a `45 cm` sobre el piso en un scan virtual de 24 columnas fusionado en `Lidar.extra` (`mezclar`).
+  - Desactivable con `--param depth_guard=0`.
+
+### G. Velocidad por holgura lateral (`1_competencia/nav_core.py`, `1_competencia/navegacion.py`)
+- **Problema:** En zonas estrechas o cerca de patas de sillas fuera del FOV de la cámara, avanzar a velocidad completa aumenta los roces laterales.
+- **Solución:** `nav_core.side_scale` reduce linealmente `lin` hasta `0.5` cuando hay obstáculos laterales entre `0.60 m` (`side_free`) y `0.28 m` (`side_tight`) hasta `0.80 m` al frente (`side_ahead`), usando el scan del LiDAR sin costo extra de CPU.
 
 ---
 
 ## 3. Verificación (WSL y Raspberry Pi)
 
 - **Tests en WSL** (`1_competencia/`):
-  - `pytest -q` → **178 passed, 1 skipped** (71.77s), incluyendo 5 tests nuevos en [`1_competencia/tests/test_mision_guiada.py`](../1_competencia/tests/test_mision_guiada.py#L218-L333).
+  - `pytest -q` → **187 passed, 1 skipped**, incluyendo los tests de [`1_competencia/tests/test_mision_guiada.py`](../1_competencia/tests/test_mision_guiada.py) y [`1_competencia/tests/test_profundidad.py`](../1_competencia/tests/test_profundidad.py).
 - **Despliegue en la Pi (`ubuntu@192.168.185.3:~/mision_mov/`)**:
   - Backups en `~/mision_mov/bak/`.
-  - MD5 verificados (local = Pi):
-    - `mision.py`: `cc8a37a1cd4a0798e9eb1c88706448d7`
-    - `navegacion.py`: `5f6fc694b19c0802b15ce596341e4c47`
-  - `python3 -m py_compile mision.py navegacion.py` → `COMPILE_OK`.
+  - Archivos actualizados en la Pi (`mision.py`, `navegacion.py`, `nav_core.py`, `profundidad.py`).
 
 ---
 

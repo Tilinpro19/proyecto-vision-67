@@ -48,6 +48,10 @@ class NavParams:
     k_wall: float = 2.0          # rad/s por m que se invade wall_min
     near_dist: float = 0.45      # m   con algo mas cerca que esto se reduce la angular...
     near_angular: float = 0.5    # ...hasta este factor
+    side_free: float = 0.60      # m   holgura lateral por encima de esto -> velocidad maxima
+    side_tight: float = 0.28     # m   holgura lateral por debajo de esto -> side_min_scale
+    side_min_scale: float = 0.5  # factor de la lineal con holgura lateral minima
+    side_ahead: float = 0.80     # m   se mira la holgura lateral hasta esta distancia al frente
 
     @property
     def inflate(self):
@@ -182,6 +186,22 @@ def speed_command(heading, front_free, max_linear, max_angular, p=NavParams()):
     turn_scale = max(0.0, (math.cos(heading) - cos_tip) / (1.0 - cos_tip))
     linear = max_linear * min(max(k, 0.0), 1.0) * turn_scale
     return float(linear), angular
+
+
+def side_scale(r, a, p=NavParams()):
+    """Factor (side_min_scale..1) para la velocidad lineal segun la holgura LATERAL minima de lo
+    que esta a los lados y hasta side_ahead al frente (patas de silla, marcos, esquinas).
+    Cuesta un par de operaciones numpy sobre el scan que ya se lee."""
+    r, a = np.asarray(r), np.asarray(a)
+    if r.size == 0:
+        return 1.0
+    x, y = r * np.cos(a), np.abs(r * np.sin(a))
+    sel = (x > -0.05) & (x < p.side_ahead) & (y > 0.02)
+    if not sel.any():
+        return 1.0
+    d = float(y[sel].min())
+    k = (d - p.side_tight) / (p.side_free - p.side_tight)
+    return float(p.side_min_scale + (1.0 - p.side_min_scale) * min(max(k, 0.0), 1.0))
 
 
 def goal_bearing(pose, goal):

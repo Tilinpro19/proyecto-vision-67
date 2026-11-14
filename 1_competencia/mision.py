@@ -55,6 +55,7 @@ class MisionParams:
     regreso_modo: str = "migas"           # migas (desanda por migas sin obedecer flechas al volver)
     flechas_marco: str = "robot"          # robot (izq/der relativas al robot)
     bandera_frames: int = 2               # frames seguidos con bandera para confirmar llegada a B
+    depth_guard: bool = True              # guardian de profundidad OAK-D (bajo demanda; ver profundidad.py)
     cam_periodo: float = 0.20             # s entre lecturas de senales en modo guiado (ahorro CPU Pi)
 
 
@@ -293,6 +294,12 @@ class Sistema:
         self.umbral = args.umbral or facial.UMBRAL
         self.sender = Sender(self.node, args.cmd_vel, args.dry)
         self.mp = mp
+        self.guardian = None
+        if mp.depth_guard:
+            from profundidad import GuardianProfundidad
+            self.guardian = GuardianProfundidad(
+                log=lambda txt: print(f"[profundidad] {txt}", flush=True))
+            self.lidar.extra = self.guardian.mezclar
         self._despertar_sensores()
 
     def _despertar_sensores(self):
@@ -372,6 +379,8 @@ class Sistema:
         try:
             self.sender.stop()
         finally:
+            if self.guardian is not None:
+                self.guardian.cerrar()
             self.anunciador.cerrar()
             self.node.destroy_node()
             self.rclpy.try_shutdown()
@@ -418,6 +427,8 @@ def _volcar_eventos_piloto(s, m, piloto):
             atasco = True
     piloto.eventos.clear()
     if atasco:
+        if getattr(s, "guardian", None) is not None:
+            s.guardian.forzar(time.monotonic())
         r, a = s.lidar.data
         pose = piloto.pose(s.odom.pose) if piloto.origin is not None else s.odom.pose
         m.guardar_diagnostico("atasco", pose, r, a, piloto.crumbs)
