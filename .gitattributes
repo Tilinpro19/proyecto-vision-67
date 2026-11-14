@@ -1,0 +1,7 @@
+# Mantener saltos de linea LF en scripts y codigo para WSL / Ubuntu / Raspberry Pi
+*.sh text eol=lf
+*.py text eol=lf
+*.xml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+Makefile text eol=lf
