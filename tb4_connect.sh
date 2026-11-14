@@ -94,7 +94,7 @@ _tb4_sync_auto() {
     done
     [ "$n" -ge 3 ] || echo "[AVISO] el robot tarda en volver: repite 'source tb4_connect.sh' en un minuto."
   fi
-  echo "[ok]   reloj del robot igualado. El Create 3 tarda unos minutos en alinearse: NO lances SLAM hasta que  python3 chequeo_reloj_tb4.py --esperar  diga OK."
+  echo "[ok]   reloj del robot igualado. El Create 3 tarda unos minutos en alinearse: NO lances SLAM hasta que  python3 scripts/chequeo_reloj_tb4.py --esperar  diga OK."
 }
 
 _tb4_check_clock() {
@@ -108,11 +108,11 @@ _tb4_check_clock() {
     # deja al Create 3 atrasado unos minutos y SLAM descarta todos los escaneos: peor que no tocar nada.
     if awk -v o="$off" 'BEGIN{exit !(o<3600 && o>-3600)}'; then
       echo "        Desfase pequeno (<1 h): no se corrige a proposito. Lo que importa es que Pi y Create 3 coincidan:"
-      echo "        python3 chequeo_reloj_tb4.py   (forzar igual: source tb4_connect.sh --hora)"
+      echo "        python3 scripts/chequeo_reloj_tb4.py   (forzar igual: source tb4_connect.sh --hora)"
       return 0
     fi
     if _tb4_auto_possible "$ip"; then _tb4_sync_auto "$ip" "$off"; return $?; fi
-    echo "        Sincronizar reinicia turtlebot4.service del robot. (Para hacerlo solo: ./configurar_sync_automatico.sh)"
+    echo "        Sincronizar reinicia turtlebot4.service del robot. (Para hacerlo solo: ./scripts/configurar_sync_automatico.sh)"
     [ -t 0 ] || { echo "        (terminal no interactiva) Hazlo luego: source tb4_connect.sh --hora"; return 0; }
     local ans
     read -r -p "        Sincronizar ahora? [S/n] " ans
