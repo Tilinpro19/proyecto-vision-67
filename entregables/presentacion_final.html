@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proyecto Final · TurtleBot 4 Lite</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --card: #1e293b;
+    --accent: #38bdf8;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .deck { flex: 1; position: relative; }
+  .slide {
+    position: absolute; inset: 0;
+    padding: 48px 64px;
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    gap: 24px;
+  }
+  .slide.active { display: flex; }
+  h1 { font-size: 2.8rem; color: var(--accent); line-height: 1.15; }
+  h2 { font-size: 2.0rem; color: var(--accent); border-bottom: 2px solid #334155; padding-bottom: 10px; }
+  h3 { font-size: 1.2rem; color: var(--ok); margin-bottom: 8px; }
+  p, li { font-size: 1.15rem; line-height: 1.55; color: var(--text); }
+  ul { padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+  .subtitle { font-size: 1.35rem; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px 24px;
+  }
+  .badge {
+    display: inline-block; padding: 4px 12px; border-radius: 999px;
+    font-size: 0.9rem; font-weight: 600; background: #0ea5e922; color: var(--accent);
+    border: 1px solid #38bdf855;
+  }
+  .badge.ok { background: #10b98122; color: var(--ok); border-color: #34d39955; }
+  .badge.warn { background: #f59e0b22; color: var(--warn); border-color: #fbbf2455; }
+  code { background: #020617; padding: 2px 7px; border-radius: 5px; color: #7dd3fc; font-size: 0.95em; }
+  table { width: 100%; border-collapse: collapse; font-size: 1.05rem; }
+  th, td { border: 1px solid #334155; padding: 10px 14px; text-align: left; }
+  th { background: #1e293b; color: var(--accent); }
+  footer {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 32px; background: #020617; color: var(--muted); font-size: 0.95rem;
+  }
+  button {
+    background: var(--card); color: var(--text); border: 1px solid #334155;
+    padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.95rem;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  @media print {
+    body { overflow: visible; height: auto; }
+    .slide { position: static; display: flex !important; page-break-after: always; min-height: 95vh; }
+    footer { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+
+  <section class="slide active">
+    <span class="badge">Robótica y Visión Computacional · ROS 2 Jazzy</span>
+    <h1>Navegación Autónoma Guiada por Señales y Teleoperación Gestual</h1>
+    <p class="subtitle">TurtleBot 4 Lite (Create 3 + Raspberry Pi 4 + RPLIDAR A1 + OAK-D Lite)</p>
+    <div class="grid" style="margin-top: 12px;">
+      <div class="card">
+        <h3>Tarea A · Autónoma</h3>
+        <p>Circuito desconocido <code>A → B → A</code> guiado por señales B/N y LiDAR, reconocimiento facial en B y anuncio por voz en A.</p>
+      </div>
+      <div class="card">
+        <h3>Tarea B · Gestos</h3>
+        <p>Teleoperación sin teclado ni joystick mediante MediaPipe <code>HandLandmarker</code> con guardián anti-colisión LiDAR.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <h2>1. Arquitectura Reactiva a Bordo (Sin SLAM / Nav2)</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Por qué sin Nav2 en la Pi 4</h3>
+        <ul>
+          <li>El circuito se revela el día de la competencia (sin mapa previo).</li>
+          <li>Nav2 + SLAM saturan la Raspberry Pi 4; la navegación reactiva deja CPU libre para visión.</li>
+          <li>Ejecución <em>on-board</em> (<code>competencia_onboard.sh</code>) inmune a latencia Wi-Fi.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Máquina de Estados (<code>mision.py</code>)</h3>
+        <p><code>ESPERA → IR_A_B → ESCANEAR → VOLVER_A_A → ANUNCIAR → FIN</code></p>
+        <ul style="margin-top: 12px;">
+          <li>Cronómetro global desde que sale de A.</li>
+          <li>Parada de emergencia por <code>/mision/parar</code>, <code>t_max</code>, <code>Ctrl+C</code> o puño.</li>
+          <li>Registro automático de eventos y trazas <code>.npz</code> ante atascos/choques.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <h2>2. Detección de Señales B/N por Forma (<code>senales_forma.py</code>)</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Clasificación Geométrica</h3>
+        <ul>
+          <li><strong>Flechas izq/der y prohibido:</strong> contorno circular con hueco, normalización 40×40 y correlación contra plantillas.</li>
+          <li><strong>Bandera de cuadros:</strong> agrupación conexa de cuadrados oscuros compactos → llegada a <strong>B</strong>.</li>
+          <li><strong>QR (<code>milestone_*</code>):</strong> decodificación con <code>senales.py</code> para registrar hitos sin detenerse.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Pruebas Sintéticas (<code>test_senales_forma.py</code>)</h3>
+        <ul>
+          <li>Perspectiva ±28°, inclinación 10°, poca luz, sobreexposición y sombra lateral.</li>
+          <li>Funciona incluso en resolución preview de 250 px.</li>
+          <li>0 falsos positivos sobre paredes, baldosas, patrones regulares y rostros.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <h2>3. Pasillos, Cruces y Política de Decisión</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Topología LiDAR (<code>pasillo.py</code>)</h3>
+        <ul>
+          <li>Evalúa conos frontal y laterales con disco inflado (<code>R = 0.31 m</code>).</li>
+          <li>Clasifica <code>pasillo</code>, <code>callejon</code>, <code>L</code>, <code>T</code> y <code>cruz</code> con filtro temporal.</li>
+          <li>Centrado proporcional entre paredes + evasión reactiva.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Jerarquía (<code>decision.py</code>)</h3>
+        <ol style="padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 1.1rem;">
+          <li><strong>Bandera:</strong> marca llegada a B (2 detecciones).</li>
+          <li><strong>Prohibido:</strong> cierra rama frontal / busca alternativa.</li>
+          <li><strong>Flecha:</strong> manda si el LiDAR confirma rama abierta (si contradice, gana el LiDAR).</li>
+          <li><strong>Sin señal:</strong> explora por cruces recordando ramas visitadas.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <h2>4. Estrategia "Cero Colisiones" y Regreso a A</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Capas de Seguridad</h3>
+        <ul>
+          <li><strong>VFH-lite (<code>nav_core.py</code>):</strong> 73 rumbos, <code>side_margin</code> y reducción de velocidad en zonas estrechas (<code>side_scale</code>).</li>
+          <li><strong>Guardián de Profundidad (<code>profundidad.py</code>):</strong> suscribe OAK-D stereo solo bajo demanda en pasillos estrechos o atascos (obstáculos de 5–45 cm).</li>
+          <li><strong>Bumper + Escape:</strong> retroceso seguro (<code>back_free &gt; 0.20 m</code>) y barreras virtuales.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Retorno Autónomo (<code>B → A</code>)</h3>
+        <ul>
+          <li>Migas de pan cada 20 cm durante la ida.</li>
+          <li>Recorte de atajos cuando hay línea libre (<code>pick_waypoint</code>).</li>
+          <li>Alineación <strong>ICP 2D</strong> contra keyframes LiDAR cada 80 cm para corregir deriva de odometría.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <h2>5. Tarea B (Gestos) y Reconocimiento Facial</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Teleoperación Gestual (<code>gestos_teleop.py</code>)</h3>
+        <ul>
+          <li>Palma abierta 1 s: arma y arranca cronómetro.</li>
+          <li>Puño: para y desarma · 👍 avanzar · 👎 parar · Pistola: girar.</li>
+          <li>V (1.5 s): escanear foto en B / anunciar en A.</li>
+          <li>Guardián LiDAR frena antes de cualquier obstáculo.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Reconocimiento Facial (<code>facial.py</code>)</h3>
+        <ul>
+          <li><strong>YuNet:</strong> detección de rostro + 5 puntos fiduciales.</li>
+          <li><strong>SFace:</strong> descriptor 128-D y similitud coseno contra galería.</li>
+          <li>Barrido automático ±35° si no ve rostro de frente.</li>
+          <li>Anuncio por voz al volver a A + acorde en buzzer.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <h2>6. Validación en Simulación y Pendientes de Pista</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="badge ok">Verificado sin robot</span>
+        <h3 style="margin-top: 10px;">Suite Automatizada</h3>
+        <p style="font-size: 1.6rem; font-weight: 700; color: var(--ok);">187 passed · 1 skipped</p>
+        <p style="color: var(--muted); margin-top: 6px;"><code>pytest 1_competencia/tests/ -v</code> (71.15 s)</p>
+        <p style="margin-top: 10px;">Incluye circuito laberinto completo A → B (bandera) → A con deriva de odometría y 0 choques.</p>
+      </div>
+      <div class="card">
+        <span class="badge warn">Ensayos en Laboratorio</span>
+        <h3 style="margin-top: 10px;">Resultados en Pista Real</h3>
+        <table>
+          <tr><th>Prueba</th><th>Mejor Tiempo</th><th>Choques</th><th>Nombre</th></tr>
+          <tr><td>Tarea A</td><td><em>pendiente</em></td><td><em>-</em></td><td><em>-</em></td></tr>
+          <tr><td>Tarea B</td><td><em>pendiente</em></td><td><em>-</em></td><td><em>-</em></td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</div>
+<footer>
+  <span>Proyecto Final · TurtleBot 4 Lite (Grupo 67)</span>
+  <div>
+    <button onclick="go(-1)">← Anterior</button>
+    <span id="num" style="margin: 0 12px;">1 / 7</span>
+    <button onclick="go(1)">Siguiente →</button>
+  </div>
+</footer>
+<script>
+  const slides = [...document.querySelectorAll('.slide')];
+  let idx = 0;
+  function show(n) {
+    idx = (n + slides.length) % slides.length;
+    slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+    document.getElementById('num').textContent = `${idx + 1} / ${slides.length}`;
+  }
+  function go(d) { show(idx + d); }
+  document.addEventListener('keydown', e => {
+    if (['ArrowRight', ' ', 'PageDown'].includes(e.key)) go(1);
+    if (['ArrowLeft', 'PageUp'].includes(e.key)) go(-1);
+  });
+</script>
+</body>
+</html>
