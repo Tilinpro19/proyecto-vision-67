@@ -35,13 +35,16 @@ class ProfParams:
     cam_x: float = 0.10          # m   camara adelante del centro del robot (SIN MEDIR: ajustar)
     step: int = 4                # reduccion de la imagen (640x400 -> 160x100)
     nbins: int = 24              # columnas del scan virtual
-    pct: float = 10.0            # percentil de z por columna (robusto a pixeles sueltos)
-    min_pix: int = 6             # pixeles de obstaculo por columna para aceptar
+    pct: float = 30.0            # percentil de z por columna (no el mas cercano: pixeles sueltos)
+    min_pix: int = 20            # pixeles de obstaculo por columna para aceptar (~3 %)
+    persist: int = 3             # cuadros recientes que se miran...
+    persist_min: int = 2         # ...y en cuantos debe aparecer la columna (descarta fantasmas)
+    persist_tol: float = 0.30    # m   rango compatible entre cuadros
 
 
-def scan_virtual(depth_mm, p=ProfParams()):
-    """depth_mm: uint16 (alto, ancho) en mm. Devuelve (r, a) float arrays (marco del robot,
-    a=0 al frente, + izquierda). Vacio si no hay obstaculos bajos."""
+def bins_virtual(depth_mm, p=ProfParams()):
+    """depth_mm: uint16 (alto, ancho) en mm. Devuelve (r, a) por columna (nbins), r=nan si la
+    columna no tiene obstaculo bajo. Marco del robot: a=0 al frente, + izquierda."""
     D = np.asarray(depth_mm)[::p.step, ::p.step].astype(np.float32) * 0.001
     h, w = D.shape
     v = (np.arange(h, dtype=np.float32) * p.step)[:, None]
@@ -49,10 +52,13 @@ def scan_virtual(depth_mm, p=ProfParams()):
     y = (v - p.cy) / p.fx * D
     hf = (p.floor_h + p.floor_slope * D) - y          # altura sobre el piso
     ok = (D > p.zmin) & (D < p.zmax) & (hf > p.hmin + p.hmin_z * D) & (hf < p.hmax)
+    r_b = np.full(p.nbins, np.nan)
+    a_b = np.array([math.atan2(-(0.5 * (e0 + e1 - 1) * p.step - p.cx) / p.fx, 1.0)
+                    for e0, e1 in zip(np.linspace(0, w, p.nbins + 1)[:-1].astype(int),
+                                      np.linspace(0, w, p.nbins + 1)[1:].astype(int))])
     if not ok.any():
-        return np.empty(0), np.empty(0)
+        return r_b, a_b
     edges = np.linspace(0, w, p.nbins + 1).astype(int)
-    rs, as_ = [], []
     for i in range(p.nbins):
         sel = ok[:, edges[i]:edges[i + 1]]
         if sel.sum() < p.min_pix:
@@ -61,9 +67,30 @@ def scan_virtual(depth_mm, p=ProfParams()):
         uc = 0.5 * (edges[i] + edges[i + 1] - 1) * p.step
         py = -(uc - p.cx) / p.fx * z                   # + izquierda
         px = z + p.cam_x
-        rs.append(math.hypot(px, py))
-        as_.append(math.atan2(py, px))
-    return np.array(rs), np.array(as_)
+        r_b[i] = math.hypot(px, py)
+        a_b[i] = math.atan2(py, px)
+    return r_b, a_b
+
+
+def scan_virtual(depth_mm, p=ProfParams()):
+    """Como bins_virtual pero solo las columnas con obstaculo: (r, a). Vacio si no hay."""
+    r, a = bins_virtual(depth_mm, p)
+    m = ~np.isnan(r)
+    return r[m], a[m]
+
+
+def filtrar_persistencia(historial, p=ProfParams()):
+    """historial: lista de arrays r por columna (nan = nada) de los ultimos cuadros. Una columna
+    cuenta solo si aparece en >= persist_min de ellos con rangos compatibles: un pixel suelto
+    de la estereo (bordes de objetos) dura un cuadro y no frena al robot."""
+    H = np.array(historial[-p.persist:])
+    out = np.full(H.shape[1], np.nan)
+    for c in range(H.shape[1]):
+        col = H[:, c]
+        col = col[~np.isnan(col)]
+        if len(col) >= p.persist_min and col.max() - col.min() <= p.persist_tol:
+            out[c] = float(np.median(col))
+    return out
 
 
 class GuardianProfundidad:
@@ -83,6 +110,8 @@ class GuardianProfundidad:
         self._quiere = False
         self._lock = threading.Lock()
         self._t_proc = -1e9
+        self._hist = []
+        self.ultimo_cuadro = None     # profundidad reducida (diagnostico en atascos/choques)
 
     # --- decision de encender -------------------------------------------------------
     def _necesita(self, r, a):
@@ -127,6 +156,7 @@ class GuardianProfundidad:
     def _detener(self):
         self._quiere = False
         self.virtual = (np.empty(0), np.empty(0))
+        self._hist = []
 
     @property
     def encendido(self):
@@ -150,7 +180,8 @@ class GuardianProfundidad:
                 while self._quiere:
                     ex.spin_once(timeout_sec=0.1)
             except Exception as e:  # sin romper la mision si falla la camara
-                self.log(f"profundidad no disponible: {e}")
+                if rclpy.ok():
+                    self.log(f"profundidad no disponible: {e!r}")
                 self._quiere = False
                 self.activo_hasta = -1e9
             finally:
@@ -162,6 +193,7 @@ class GuardianProfundidad:
                 except Exception:
                     pass
                 self.virtual = (np.empty(0), np.empty(0))
+                self._hist = []
                 self.log("profundidad OFF")
             with self._lock:
                 if not self._quiere:
@@ -176,7 +208,12 @@ class GuardianProfundidad:
         if msg.encoding != "16UC1":
             return
         d = np.frombuffer(msg.data, np.uint16).reshape(msg.height, msg.width)
-        self.virtual = scan_virtual(d, self.p)
+        self.ultimo_cuadro = d[::4, ::4].copy()
+        r_b, a_b = bins_virtual(d, self.p)
+        self._hist = (self._hist + [r_b])[-self.p.persist:]
+        r_f = filtrar_persistencia(self._hist, self.p)
+        m = ~np.isnan(r_f)
+        self.virtual = (r_f[m], a_b[m])
         self.t_virtual = now
 
     def cerrar(self):

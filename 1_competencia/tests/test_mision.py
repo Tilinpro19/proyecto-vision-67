@@ -96,6 +96,114 @@ def test_escaneo_barre_cada_vez_mas_ancho_si_no_ve_nada():
     assert e.paso(20.5, vacio) == (0.0, [])      # al final se rinde sin frames
 
 
+def test_escaneo_objetivo_descarta_otra_persona_y_lee_qr_del_objetivo():
+    import math
+    from types import SimpleNamespace
+
+    mp = ms.MisionParams(escaneo_frames_persona=2, busqueda_angular=0.4, sector_visto_rad=0.6)
+    galeria = SimpleNamespace(nombres=["Ana", "Mateo"])
+
+    class RostrosPorAngulo:
+        def detectar(self, img):
+            # img es un dict/marcador o array; usamos shape[0] == 8 para indicar cara
+            return img, (np.ones((1, 15)) if img is not None and img.shape[0] == 8 else np.empty((0, 15)))
+
+    def fake_identificar(frames):
+        tag = int(frames[0][0, 0, 0])
+        if tag == 1:
+            return SimpleNamespace(nombre="Ana", score=0.72, seguro=True, n_caras=len(frames), ranking=[("Ana", 0.72)])
+        return SimpleNamespace(nombre="Mateo", score=0.81, seguro=True, n_caras=len(frames), ranking=[("Mateo", 0.81)])
+
+    def fake_qr(img):
+        tag = int(img[0, 0, 0])
+        return ["QR_MATEO_01"] if tag == 2 else []
+
+    esc = ms.EscaneoObjetivo("Mateo", RostrosPorAngulo(), galeria, mp, t0=0.0, yaw0=0.0,
+                             qr_fn=fake_qr, identificar_fn=fake_identificar)
+
+    vacio = np.zeros((4, 4, 3), dtype=np.uint8)
+    cara_ana = np.ones((8, 8, 3), dtype=np.uint8) * 1
+    cara_mateo = np.ones((8, 8, 3), dtype=np.uint8) * 2
+
+    # Gira buscando; al ver a Ana (+1.57 rad), se detiene a recolectar pero sigue buscando
+    ang, res = esc.paso(0.1, 0.2, vacio)
+    assert ang == pytest.approx(0.4) and res is None
+
+    ang, res = esc.paso(0.2, 1.57, cara_ana)
+    assert ang == 0.0 and res is None
+    ang, res = esc.paso(0.3, 1.57, cara_ana)
+    assert ang == 0.0 and res is None and esc.subestado == "BUSCAR"
+
+    # En el mismo sector de Ana no re-escanea
+    ang, res = esc.paso(0.4, 1.65, cara_ana)
+    assert ang == pytest.approx(0.4) and res is None
+
+    # Sigue girando hasta el otro lado (-1.57 rad) donde esta Mateo + su QR
+    ang, res = esc.paso(0.5, -1.57, cara_mateo)
+    assert ang == 0.0 and res is None
+    ang, res = esc.paso(0.6, -1.57, cara_mateo)
+    assert res is not None
+    assert res["encontrado"] is True
+    assert res["nombre"] == "Mateo"
+    assert res["qr"] == "QR_MATEO_01"
+
+
+def test_escaneo_objetivo_panea_para_leer_qr_al_costado():
+    from types import SimpleNamespace
+
+    mp = ms.MisionParams(escaneo_frames_persona=1, qr_barrido_max=5.0)
+    galeria = SimpleNamespace(nombres=["Mateo"])
+    cara_sin_qr = np.ones((8, 8, 3), dtype=np.uint8)
+    solo_qr = np.ones((4, 4, 3), dtype=np.uint8) * 9
+
+    class Rostros:
+        def detectar(self, img):
+            return img, (np.ones((1, 15)) if img is not None and img.shape[0] == 8 else np.empty((0, 15)))
+
+    def fake_identificar(frames):
+        return SimpleNamespace(nombre="Mateo", score=0.75, seguro=True, n_caras=1, ranking=[("Mateo", 0.75)])
+
+    def fake_qr(img):
+        return ["QR_COSTADO"] if int(img[0, 0, 0]) == 9 else []
+
+    esc = ms.EscaneoObjetivo("Mateo", Rostros(), galeria, mp, t0=0.0, yaw0=0.0,
+                             qr_fn=fake_qr, identificar_fn=fake_identificar)
+
+    # Ve cara sin QR -> se detiene a recolectar y luego pasa a BUSCAR_QR
+    ang, res = esc.paso(0.1, 0.0, cara_sin_qr)
+    assert ang == 0.0 and res is None and esc.subestado == "RECOLECTAR"
+    ang, res = esc.paso(0.2, 0.0, cara_sin_qr)
+    assert res is None and esc.subestado == "BUSCAR_QR"
+
+    # Panea hacia la izquierda y luego ve el QR al costado
+    ang, res = esc.paso(0.3, 0.2, np.zeros((4, 4, 3), dtype=np.uint8))
+    assert ang > 0 and res is None
+    ang, res = esc.paso(0.4, 0.45, solo_qr)
+    assert res is not None and res["qr"] == "QR_COSTADO" and res["nombre"] == "Mateo"
+
+
+def test_escaneo_objetivo_no_se_cuelga_si_no_esta_y_vuelve_tras_360():
+    from types import SimpleNamespace
+
+    mp = ms.MisionParams(escaneo_frames_persona=1, escaneo_objetivo_max=30.0)
+    galeria = SimpleNamespace(nombres=["Ana", "Mateo"])
+
+    class SinCaras:
+        def detectar(self, img):
+            return img, np.empty((0, 15))
+
+    esc = ms.EscaneoObjetivo("Mateo", SinCaras(), galeria, mp, t0=0.0, yaw0=0.0)
+    vacio = np.zeros((4, 4, 3), dtype=np.uint8)
+    res = None
+    # Simula una vuelta completa en pasos de 0.5 rad
+    for i in range(1, 16):
+        yaw = ((i * 0.5 + 3.14159) % (2 * 3.14159)) - 3.14159
+        _, res = esc.paso(i * 0.5, yaw, vacio)
+        if res is not None:
+            break
+    assert res is not None and res["encontrado"] is False and res["qr"] is None
+
+
 def test_apply_params_json_y_overrides(tmp_path):
     pp, mp = PilotoParams(), ms.MisionParams()
     cfg = tmp_path / "c.json"

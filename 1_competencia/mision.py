@@ -55,8 +55,15 @@ class MisionParams:
     regreso_modo: str = "migas"           # migas (desanda por migas sin obedecer flechas al volver)
     flechas_marco: str = "robot"          # robot (izq/der relativas al robot)
     bandera_frames: int = 2               # frames seguidos con bandera para confirmar llegada a B
-    depth_guard: bool = True              # guardian de profundidad OAK-D (bajo demanda; ver profundidad.py)
+    depth_guard: bool = False             # guardian de profundidad OAK-D (bajo demanda; ver profundidad.py).
+                                          # Apagado: en la 1a prueba real dejo al robot atascado; activar con --param depth_guard=1
     cam_periodo: float = 0.20             # s entre lecturas de senales en modo guiado (ahorro CPU Pi)
+    # Busqueda multi-persona + QR en B (cuando --persona se indica al inicio del circuito)
+    persona: str = ""                     # nombre objetivo a buscar en B (vacio = modo clasico de 1 cara)
+    escaneo_frames_persona: int = 6       # frames con cara por cada persona al barrer en B
+    escaneo_objetivo_max: float = 45.0    # s   maximo barriendo 360 y leyendo QR en B
+    qr_barrido_max: float = 8.0           # s   maximo buscando el QR al costado de la persona objetivo
+    sector_visto_rad: float = 0.65        # rad (~37 deg) margen angular para no re-escanear la misma cara
 
 
 def drenar(spin_once, periodo, reloj=time.monotonic):
@@ -106,6 +113,7 @@ class Mision:
         self.eventos, self.choques = [], 0
         self.senales, self.decisiones, self.hitos_qr = [], [], []
         self.nombre, self.score, self.seguro = None, 0.0, False
+        self.objetivo, self.qr_objetivo = None, None
         self.log_dir = log_dir
         self._diag_seq = 0
         self.log_path = None
@@ -146,7 +154,7 @@ class Mision:
         self.choques += 1
         self.evento(f"CHOQUE #{self.choques} ({origen})")
 
-    def guardar_diagnostico(self, motivo, pose, ranges, angles, crumbs=None):
+    def guardar_diagnostico(self, motivo, pose, ranges, angles, crumbs=None, guardian=None):
         """Guarda scan, pose y migas en un .npz dentro de log_dir para depurar atascos/choques."""
         if not self.log_dir:
             return None
@@ -154,8 +162,15 @@ class Mision:
         base = os.path.splitext(os.path.basename(self.log_path))[0] if self.log_path else f"mision_{self.tarea}"
         nombre = f"{base}_{self._diag_seq:03d}_{motivo}.npz"
         ruta = os.path.join(self.log_dir, nombre)
+        extra = {}
+        if guardian is not None and guardian.ultimo_cuadro is not None:
+            # separa lo que vio la camara: puntos virtuales + cuadro de profundidad reducido (1/4)
+            extra = dict(virt_r=np.asarray(guardian.virtual[0], dtype=np.float32),
+                         virt_a=np.asarray(guardian.virtual[1], dtype=np.float32),
+                         depth4=guardian.ultimo_cuadro)
         np.savez_compressed(
             ruta,
+            **extra,
             t=np.array([self.tiempo()], dtype=np.float64),
             pose=np.asarray(pose, dtype=np.float64),
             ranges=np.asarray(ranges, dtype=np.float32),
@@ -169,6 +184,7 @@ class Mision:
         return dict(tarea=self.tarea, ok=self.estado == FIN, estado=self.estado,
                     tiempo=round(self.tiempo(), 2), choques=self.choques, nombre=self.nombre,
                     score=round(self.score, 3), seguro=self.seguro,
+                    objetivo=self.objetivo, qr_objetivo=self.qr_objetivo,
                     senales=self.senales, decisiones=self.decisiones, hitos_qr=self.hitos_qr,
                     perfil=self.perfil.resumen())
 
@@ -233,6 +249,181 @@ class Escaneo:
         return (self.mp.busqueda_angular if n % 2 == 0 else -self.mp.busqueda_angular), None
 
 
+class EscaneoObjetivo:
+    """Barrido 360 en B cuando se busca una persona especifica y su QR al costado.
+    Gira revisando cada cara en sectores no visitados; al hallar al objetivo,
+    lee el QR cercano (o hace un pequeno barrido local izq/der) antes de retornar."""
+
+    def __init__(self, objetivo, rostros, galeria, mp, t0, yaw0=0.0, umbral=None,
+                 qr_fn=None, identificar_fn=None):
+        self.objetivo = str(objetivo).strip()
+        self.objetivo_norm = self.objetivo.lower()
+        self.rostros, self.galeria, self.mp = rostros, galeria, mp
+        self.t0 = t0
+        self.limite = mp.escaneo_objetivo_max
+        self.frames_por_cara = max(1, mp.escaneo_frames_persona)
+        self.yaw_prev = yaw0
+        self.yaw_abs = 0.0
+        self.umbral = umbral
+        self._qr_fn = qr_fn
+        self._identificar_fn = identificar_fn
+
+        self.subestado = "BUSCAR"  # BUSCAR | RECOLECTAR | BUSCAR_QR
+        self.t_sub = t0
+        self.t_qr = t0
+        self.qr_yaw0 = yaw0
+        self.qr_dir = 1
+        self.sector_yaw = yaw0
+        self.sectores_vistos = []
+        self.frames = []
+        self.qrs_sector = []
+        self.vistos = []            # lista de (yaw, Resultado, qrs)
+        self.mejor_objetivo = None  # (yaw, Resultado, qrs) si hubo match no-seguro
+        self.eventos = []           # mensajes informativos para Mision.evento()
+
+    def _qr_en_imagen(self, img):
+        if img is None:
+            return []
+        if self._qr_fn is not None:
+            return [str(q) for q in self._qr_fn(img) if q]
+        import senales
+        return [texto for texto, _ in senales.decodificar_qr(img, esfuerzo=2) if texto]
+
+    def _identificar(self, frames):
+        if self._identificar_fn is not None:
+            return self._identificar_fn(frames)
+        import facial
+        umbral = facial.UMBRAL if self.umbral is None else self.umbral
+        return facial.identificar(frames, self.rostros, self.galeria, umbral)
+
+    def _sector_ya_visto(self, yaw):
+        return any(abs(nc.wrap(yaw - v)) < self.mp.sector_visto_rad for v in self.sectores_vistos)
+
+    def _revisar_qr(self, img):
+        qrs = self._qr_en_imagen(img)
+        for q in qrs:
+            if q not in self.qrs_sector:
+                self.qrs_sector.append(q)
+        return qrs
+
+    def _es_objetivo(self, res):
+        return bool(res.nombre and res.nombre.strip().lower() == self.objetivo_norm and res.n_caras > 0)
+
+    def _armar_resultado(self, yaw, res, qrs, encontrado):
+        qr = qrs[0] if qrs else None
+        return dict(
+            nombre=res.nombre,
+            score=res.score,
+            seguro=res.seguro,
+            n_caras=res.n_caras,
+            ranking=res.ranking,
+            qr=qr,
+            qrs=list(qrs),
+            encontrado=encontrado,
+            yaw=yaw,
+            vistos=[(y, r.nombre, r.score, r.seguro, qs) for y, r, qs in self.vistos],
+        )
+
+    def _resultado_final(self):
+        if self.mejor_objetivo is not None:
+            yaw, res, qrs = self.mejor_objetivo
+            return self._armar_resultado(yaw, res, qrs, True)
+        if self.vistos:
+            yaw, res, qrs = max(self.vistos, key=lambda item: item[1].score)
+            return self._armar_resultado(yaw, res, qrs, False)
+        import facial
+        vacio = facial.Resultado(nombre=(self.galeria.nombres[0] if getattr(self.galeria, "nombres", None) else None))
+        return self._armar_resultado(self.yaw_prev, vacio, [], False)
+
+    def paso(self, t, yaw, img):
+        """Avanza un ciclo. Devuelve (angular, dict_resultado | None)."""
+        dy = nc.wrap(yaw - self.yaw_prev)
+        self.yaw_abs += abs(dy)
+        self.yaw_prev = yaw
+
+        if self.subestado == "BUSCAR":
+            if t - self.t0 > self.limite or self.yaw_abs >= 2.0 * math.pi + 0.35:
+                if self.mejor_objetivo is not None and not self.mejor_objetivo[2] and t - self.t0 < self.limite:
+                    myaw, _, mqrs = self.mejor_objetivo
+                    self.subestado = "BUSCAR_QR"
+                    self.t_qr = t
+                    self.qr_yaw0 = myaw
+                    self.qr_dir = 1
+                    self.qrs_sector = list(mqrs)
+                    self.eventos.append(
+                        f"vuelta 360 completa: busco QR para candidato {self.objetivo} (yaw={myaw:.2f})"
+                    )
+                    return 0.0, None
+                self.eventos.append(f"fin barrido 360 (vistos={len(self.vistos)})")
+                return 0.0, self._resultado_final()
+            if img is not None:
+                _, faces = self.rostros.detectar(img)
+                if len(faces) and not self._sector_ya_visto(yaw):
+                    self.subestado = "RECOLECTAR"
+                    self.t_sub = t
+                    self.sector_yaw = yaw
+                    self.frames = [img]
+                    self.qrs_sector = []
+                    self._revisar_qr(img)
+                    return 0.0, None
+            return self.mp.busqueda_angular, None
+
+        if self.subestado == "RECOLECTAR":
+            if img is not None:
+                _, faces = self.rostros.detectar(img)
+                if len(faces):
+                    self.frames.append(img)
+                    self._revisar_qr(img)
+            if len(self.frames) >= self.frames_por_cara or (t - self.t_sub) >= 3.0:
+                res = self._identificar(self.frames)
+                self.sectores_vistos.append(self.sector_yaw)
+                self.vistos.append((self.sector_yaw, res, list(self.qrs_sector)))
+                if self._es_objetivo(res):
+                    if res.seguro:
+                        self.eventos.append(
+                            f"objetivo {res.nombre} confirmado ({res.score:.2f}) en yaw={self.sector_yaw:.2f}"
+                        )
+                        if self.qrs_sector:
+                            return 0.0, self._armar_resultado(self.sector_yaw, res, self.qrs_sector, True)
+                        self.subestado = "BUSCAR_QR"
+                        self.t_qr = t
+                        self.qr_yaw0 = yaw
+                        self.qr_dir = 1
+                        self.mejor_objetivo = (self.sector_yaw, res, list(self.qrs_sector))
+                        return 0.0, None
+                    if self.mejor_objetivo is None or res.score > self.mejor_objetivo[1].score:
+                        self.mejor_objetivo = (self.sector_yaw, res, list(self.qrs_sector))
+                    self.eventos.append(
+                        f"candidato {res.nombre} dudoso ({res.score:.2f}); sigo revisando caras"
+                    )
+                else:
+                    self.eventos.append(
+                        f"vista {res.nombre or 'desconocido'} ({res.score:.2f}) en yaw={self.sector_yaw:.2f}; "
+                        f"busco a {self.objetivo}"
+                    )
+                self.frames = []
+                self.qrs_sector = []
+                self.subestado = "BUSCAR"
+            return 0.0, None
+
+        # subestado == "BUSCAR_QR"
+        if img is not None and self._revisar_qr(img):
+            yaw_obj, res_obj, _ = self.mejor_objetivo
+            self.eventos.append(f"QR de {res_obj.nombre} leido: {self.qrs_sector[0]}")
+            return 0.0, self._armar_resultado(yaw_obj, res_obj, self.qrs_sector, True)
+        if (t - self.t_qr) > self.mp.qr_barrido_max or (t - self.t0) > self.limite:
+            yaw_obj, res_obj, _ = self.mejor_objetivo
+            self.eventos.append(f"sin QR legible junto a {res_obj.nombre} tras {self.mp.qr_barrido_max:.1f}s")
+            return 0.0, self._armar_resultado(yaw_obj, res_obj, self.qrs_sector, True)
+        delta_qr = nc.wrap(yaw - self.qr_yaw0)
+        if self.qr_dir > 0 and delta_qr >= 0.55:
+            self.qr_dir = -1
+        elif self.qr_dir < 0 and delta_qr <= -0.55:
+            self.qr_dir = 1
+        ang_qr = min(0.35, self.mp.busqueda_angular)
+        return self.qr_dir * ang_qr, None
+
+
 # --- ROS ---------------------------------------------------------------------------
 
 def args_parser():
@@ -246,6 +437,8 @@ def args_parser():
     ap.add_argument("--goal", type=float, nargs=2, metavar=("X", "Y"),
                     help="Tarea A: B en m respecto a A (x frente, y izquierda); si se omite usa modo guiado")
     ap.add_argument("--galeria", default=os.path.join(HERE, "galeria"))
+    ap.add_argument("--persona", default="",
+                    help="Nombre de la persona objetivo a buscar en B (gira 360, valida cara y escanea su QR)")
     ap.add_argument("--umbral", type=float, default=None, help="similitud SFace (0.363)")
     ap.add_argument("--voz", default="auto", choices=("auto", "windows", "linux", "ninguna"))
     ap.add_argument("--resultado", help="guardar el resultado en este JSON")
@@ -414,7 +607,7 @@ def comunes(s, m, cont, t, piloto=None):
         r, a = s.lidar.data
         pose = piloto.pose(s.odom.pose) if (piloto is not None and piloto.origin is not None) else s.odom.pose
         crumbs = piloto.crumbs if piloto is not None else None
-        m.guardar_diagnostico(f"choque_{origen}", pose, r, a, crumbs)
+        m.guardar_diagnostico(f"choque_{origen}", pose, r, a, crumbs, getattr(s, "guardian", None))
     return True
 
 
@@ -431,7 +624,51 @@ def _volcar_eventos_piloto(s, m, piloto):
             s.guardian.forzar(time.monotonic())
         r, a = s.lidar.data
         pose = piloto.pose(s.odom.pose) if piloto.origin is not None else s.odom.pose
-        m.guardar_diagnostico("atasco", pose, r, a, piloto.crumbs)
+        m.guardar_diagnostico("atasco", pose, r, a, piloto.crumbs, getattr(s, "guardian", None))
+
+
+def _crear_escaneo(s, mp, t):
+    if mp.persona:
+        return EscaneoObjetivo(
+            mp.persona, s.rostros, s.galeria, mp, t,
+            yaw0=s.odom.pose[2], umbral=s.umbral,
+        )
+    return Escaneo(s.rostros, mp, t)
+
+
+def _procesar_escaneo(escaneo, s, m, t, img):
+    if isinstance(escaneo, EscaneoObjetivo):
+        ang, res = escaneo.paso(t, s.odom.pose[2], img)
+        while escaneo.eventos:
+            m.evento(escaneo.eventos.pop(0))
+        if res is None:
+            return ang, False
+        m.nombre = res["nombre"]
+        m.score = res["score"]
+        m.seguro = res["seguro"]
+        m.qr_objetivo = res["qr"]
+        for q in res["qrs"]:
+            if q not in m.hitos_qr:
+                m.hitos_qr.append(q)
+                m.senales.append(dict(t=round(m.tiempo(), 2), tipo="qr", texto=q))
+        m.evento(
+            f"resultado escaneo objetivo ({m.objetivo or s.mp.persona}): "
+            f"{m.nombre} ({m.score:.2f}, {'seguro' if m.seguro else 'DUDOSO'}), "
+            f"QR={m.qr_objetivo or 'ninguno'}, encontrado={res['encontrado']}"
+        )
+        return 0.0, True
+    ang, frames = escaneo.paso(t, img)
+    if frames is None:
+        return ang, False
+    s.identificar(frames, m)
+    return 0.0, True
+
+
+def _texto_anuncio(m):
+    nombre = m.nombre or "desconocido"
+    if m.qr_objetivo:
+        return f"{nombre}, QR {m.qr_objetivo}"
+    return nombre
 
 
 def tarea_a(args, s, m, piloto):
@@ -472,15 +709,14 @@ def tarea_a(args, s, m, piloto):
                 s.sender.send(0.0, 0.0)
                 s.cam.reanudar()
                 m.ir(ESCANEAR, f"a {info['dist']:.2f} m de B")
-                escaneo = Escaneo(s.rostros, mp, t)
+                escaneo = _crear_escaneo(s, mp, t)
                 continue
             s.sender.send(lin, ang)
         elif m.estado == ESCANEAR:
-            ang, frames = escaneo.paso(t, img)
+            ang, listo = _procesar_escaneo(escaneo, s, m, t, img)
             s.sender.send(0.0, ang)
-            if frames is not None:
+            if listo:
                 s.sender.send(0.0, 0.0)
-                s.identificar(frames, m)
                 if solo_navega:
                     s.cam.pausar()
                 piloto.volver()
@@ -496,7 +732,7 @@ def tarea_a(args, s, m, piloto):
             s.sender.send(lin, ang)
         elif m.estado == ANUNCIAR:
             s.sender.stop()
-            s.anunciador.anunciar(m.nombre or "desconocido")
+            s.anunciador.anunciar(_texto_anuncio(m))
             m.ir(FIN)
         if args.ver and img is not None:
             cv2.putText(img, f"{m.estado} {m.tiempo():.1f}s", (5, 20),
@@ -776,7 +1012,7 @@ def tarea_a_guiada(args, s, m, piloto):
                     s.sender.send(0.0, 0.0)
                     m.ir(LLEGADA_B, "bandera de cuadros confirmada")
                     m.ir(ESCANEAR, "analizando rostros en B")
-                    escaneo = Escaneo(s.rostros, mp, t)
+                    escaneo = _crear_escaneo(s, mp, t)
                     m.perfil.registrar(t_p)
                     continue
             lin, ang, info = guiado.paso(t, s.odom.pose, *s.lidar.data, mision=m, bumper_hit=s.bump())
@@ -784,15 +1020,14 @@ def tarea_a_guiada(args, s, m, piloto):
             if info.get("llegada_b"):
                 s.sender.send(0.0, 0.0)
                 m.ir(ESCANEAR, "analizando rostros en B")
-                escaneo = Escaneo(s.rostros, mp, t)
+                escaneo = _crear_escaneo(s, mp, t)
                 continue
             s.sender.send(lin, ang)
         elif m.estado == ESCANEAR:
-            ang, frames = escaneo.paso(t, img)
+            ang, listo = _procesar_escaneo(escaneo, s, m, t, img)
             s.sender.send(0.0, ang)
-            if frames is not None:
+            if listo:
                 s.sender.send(0.0, 0.0)
-                s.identificar(frames, m)
                 if not args.ver:
                     s.cam.pausar()
                 piloto.volver()
@@ -808,7 +1043,7 @@ def tarea_a_guiada(args, s, m, piloto):
             s.sender.send(lin, ang)
         elif m.estado == ANUNCIAR:
             s.sender.stop()
-            s.anunciador.anunciar(m.nombre or "desconocido")
+            s.anunciador.anunciar(_texto_anuncio(m))
             m.ir(FIN)
         if args.ver and img is not None:
             cv2.putText(img, f"{m.estado} {m.tiempo():.1f}s", (5, 20),
@@ -899,9 +1134,13 @@ def main():
     config = args.config or (os.path.join(HERE, "config.json")
                              if os.path.isfile(os.path.join(HERE, "config.json")) else None)
     valores = apply_params([piloto.nav, piloto.pp, mp], config, args.param)
+    if args.persona:
+        mp.persona = args.persona.strip()
 
     m = Mision(args.tarea, os.path.join(HERE, "logs"))
-    m.evento(f"tarea {args.tarea} | config {config} | ajustes {valores}")
+    m.objetivo = mp.persona or None
+    m.evento(f"tarea {args.tarea} | config {config} | ajustes {valores}"
+             + (f" | objetivo {m.objetivo}" if m.objetivo else ""))
     s = None
     try:
         s = Sistema(args, mp)

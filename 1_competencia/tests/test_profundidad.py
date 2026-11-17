@@ -117,3 +117,24 @@ def test_side_scale_frena_con_poca_holgura_lateral():
     s = nc.side_scale(r, ang, p)
     assert p.side_min_scale < s < 1.0
     assert nc.side_scale(np.empty(0), np.empty(0), p) == 1.0
+
+
+def test_persistencia_descarta_fantasmas_de_un_solo_cuadro():
+    n = P.nbins
+    vacio = np.full(n, np.nan)
+    fant = vacio.copy(); fant[5] = 0.6              # aparece solo en 1 de 3 cuadros
+    real = vacio.copy(); real[10] = 0.9
+    real2 = vacio.copy(); real2[10] = 1.0           # estable (rango compatible) en 2 cuadros
+    out = pf.filtrar_persistencia([vacio, fant, real, real2], P)
+    assert np.isnan(out[5])
+    assert 0.9 <= out[10] <= 1.0
+    # mismo lugar pero rangos incompatibles = no es un objeto estable
+    salta = [vacio.copy(), vacio.copy(), vacio.copy()]
+    salta[1][3], salta[2][3] = 0.5, 1.5
+    assert np.isnan(pf.filtrar_persistencia(salta, P)[3])
+
+
+def test_pixeles_sueltos_no_generan_punto():
+    d = cuadro_piso().astype(np.uint16)
+    d[240:244, 300:304] = 500                       # 4x4 px a 0.5 m (ruido de borde)
+    assert len(pf.scan_virtual(d)[0]) == 0
