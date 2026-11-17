@@ -27,6 +27,6 @@ En este directorio se compilan los reportes técnicos, especificaciones y docume
 
 ---
 
-## 📂 Próximos Entregables del Calendario
-- `entregables/reporte_fase_vision_facial.pdf`: Evaluación de precisión y matriz de confusión del clasificador SFace + YuNet con galería real.
-- `entregables/presentacion_final.pptx`: Diapositivas de defensa del proyecto final ante el jurado del curso.
+## 📂 Entregables Finales (Noviembre 2026)
+- [Informe Final Técnico (`informe_final.md`)](informe_final.md): Documentación completa de todos los subsistemas en `main` (Fases 1–5, guardián de profundidad, `187 passed / 1 skipped`) con tabla lista para llenar con los tiempos de pista real.
+- [Presentación Final (`presentacion_final.html`)](presentacion_final.html): Diapositivas interactivas (navegables con `←`/`→` e imprimibles a PDF) listas para la sustentación; solo falta completar la tabla de ensayos reales y adjuntar el video.
