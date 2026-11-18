@@ -333,3 +333,67 @@ def test_escape_atras_respeta_margen_back_free_020():
     lin, _ang, _info = piloto.paso(1.2, (0.0, 0.0, 0.0), ranges, angles)
     assert lin == 0.0
     assert piloto.escape[0] == "giro"
+
+
+def test_mision_guiada_sin_historial_no_retrocede_hacia_la_pared_trasera():
+    # Caso real (mision_A_..._214219): el robot arranca en una caja de ~0.5 m (izq, der, atras)
+    # con espacio al frente pero un retorno cercano al centro -> opciones=[]. Al inicio no hay
+    # migas ni cruce previo: "retroceder" no puede invertir el rumbo contra la pared trasera.
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    angles = [math.radians(i * 5 - 180) for i in range(72)]
+    guiado.iniciar((0.0, 0.0, 0.0), [2.0] * 72, angles)
+    ranges = []
+    for ang in angles:
+        d = abs(math.degrees(ang))
+        if d <= 5:
+            ranges.append(0.70)
+        elif d <= 40:
+            ranges.append(1.60)
+        else:
+            ranges.append(0.50)
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+    guiado.paso(1.1, (0.0, 0.0, 0.0), ranges, angles, mision=m)
+    assert not m.decisiones          # al arrancar no se decide (aun no se movio)
+    guiado.paso(7.5, (0.0, 0.0, 0.0), ranges, angles, mision=m)   # atascado >6 s: ya decide
+    assert m.decisiones and m.decisiones[0]["opciones"] == []
+    # El rumbo elegido debe mirar hacia el lado abierto (frente), no hacia la pared trasera
+    assert abs(math.degrees(ms.nc.wrap(guiado.rumbo_pasillo))) < 60.0
+
+
+def test_mision_guiada_sin_historial_conserva_rumbo_si_hay_espacio_al_frente():
+    # Caso real (run 214938): caja angosta, algo a 1.0 m al frente -> opciones=[] pero con 0.74 m
+    # libres adelante. Una puerta lateral hace que most_open apunte a ~25 deg; el rumbo NO debe
+    # desviarse (el robot terminaba de costado contra la pared y no avanzaba).
+    from sim import scan_from
+    paredes = [((-0.5, -0.5), (-0.5, 0.5)), ((-0.5, -0.5), (4, -0.5)),
+               ((-0.5, 0.5), (0.4, 0.5)), ((1.3, 0.5), (4, 0.5)), ((1.0, -0.12), (1.0, 0.12))]
+    r, a = scan_from(paredes, (0.0, 0.0, 0.0))
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    guiado.iniciar((0.0, 0.0, 0.0), r, a)
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+    guiado.paso(1.1, (0.0, 0.0, 0.0), r, a, mision=m)
+    guiado.paso(7.5, (0.0, 0.0, 0.0), r, a, mision=m)
+    assert m.decisiones and m.decisiones[0]["opciones"] == []
+    assert abs(math.degrees(ms.nc.wrap(guiado.rumbo_pasillo))) < 5.0
+
+
+def test_mision_guiada_flecha_izq_se_obedece_con_lateral_de_0_6_m():
+    # Frente cerrado y un lateral izquierdo angosto (0.7 m, < open_side 1.15) con flecha 'izq' cercana:
+    # antes caia en "callejon" y retrocedia; ahora gira a la izquierda como indica la flecha.
+    from sim import scan_from
+    from senales_forma import Senal
+    paredes = [((-1.0, -0.5), (3.0, -0.5)), ((-1.0, 0.5), (0.0, 0.5)), ((0.7, 0.5), (0.7, 2.5)),
+               ((0.0, 0.5), (0.0, 2.5)), ((1.4, -0.5), (1.4, 0.5)), ((0.0, 2.5), (0.7, 2.5))]
+    pose = (0.35, 0.0, 0.0)
+    r, a = scan_from(paredes, pose)
+    guiado = ms.PilotoGuiado(mp=ms.MisionParams(bandera_frames=2))
+    guiado.iniciar(pose, r, a)
+    m = ms.Mision("A", quiet=True)
+    m.ir(ms.SEGUIR)
+    sen = Senal(tipo="izq", confianza=0.8, bbox=(100, 100, 60, 80))
+    guiado.registrar_senales(5.0, [sen], m, alto_img=360)    # 80/360 = 0.22 >= 0.14: flecha cercana
+    assert guiado.senal_cerca
+    guiado.paso(10.0, (1.5, 0.0, 0.0), r, a, mision=m)
+    assert m.decisiones and m.decisiones[-1]["accion"] == "izq"

@@ -57,6 +57,8 @@ class MisionParams:
     bandera_frames: int = 2               # frames seguidos con bandera para confirmar llegada a B
     depth_guard: bool = False             # guardian de profundidad OAK-D (bajo demanda; ver profundidad.py).
                                           # Apagado: en la 1a prueba real dejo al robot atascado; activar con --param depth_guard=1
+    senal_cerca_alto: float = 0.14        # alto de la flecha / alto de imagen para considerarla "cerca" (punto de decision)
+    inicio_min_dist: float = 0.30         # m recorridos (o 6 s) antes de tomar la 1a decision en el arranque
     cam_periodo: float = 0.20             # s entre lecturas de senales en modo guiado (ahorro CPU Pi)
     # Busqueda multi-persona + QR en B (cuando --persona se indica al inicio del circuito)
     persona: str = ""                     # nombre objetivo a buscar en B (vacio = modo clasico de 1 cara)
@@ -114,6 +116,7 @@ class Mision:
         self.senales, self.decisiones, self.hitos_qr = [], [], []
         self.nombre, self.score, self.seguro = None, 0.0, False
         self.objetivo, self.qr_objetivo = None, None
+        self.foto_img, self.foto_face, self.foto_path = None, None, None
         self.log_dir = log_dir
         self._diag_seq = 0
         self.log_path = None
@@ -279,6 +282,10 @@ class EscaneoObjetivo:
         self.qrs_sector = []
         self.vistos = []            # lista de (yaw, Resultado, qrs)
         self.mejor_objetivo = None  # (yaw, Resultado, qrs) si hubo match no-seguro
+        self.foto_img = None
+        self.foto_face = None
+        self._ultima_img_obj = None
+        self._ultima_face_obj = None
         self.eventos = []           # mensajes informativos para Mision.evento()
 
     def _qr_en_imagen(self, img):
@@ -294,7 +301,12 @@ class EscaneoObjetivo:
             return self._identificar_fn(frames)
         import facial
         umbral = facial.UMBRAL if self.umbral is None else self.umbral
-        return facial.identificar(frames, self.rostros, self.galeria, umbral)
+        res, img_obj, face_obj = facial.buscar_persona_en_frames(
+            frames, self.rostros, self.galeria, self.objetivo, umbral
+        )
+        self._ultima_img_obj = img_obj
+        self._ultima_face_obj = face_obj
+        return res
 
     def _sector_ya_visto(self, yaw):
         return any(abs(nc.wrap(yaw - v)) < self.mp.sector_visto_rad for v in self.sectores_vistos)
@@ -321,6 +333,8 @@ class EscaneoObjetivo:
             qrs=list(qrs),
             encontrado=encontrado,
             yaw=yaw,
+            foto_img=self.foto_img if self.foto_img is not None else self._ultima_img_obj,
+            foto_face=self.foto_face if self.foto_face is not None else self._ultima_face_obj,
             vistos=[(y, r.nombre, r.score, r.seguro, qs) for y, r, qs in self.vistos],
         )
 
@@ -383,6 +397,8 @@ class EscaneoObjetivo:
                         self.eventos.append(
                             f"objetivo {res.nombre} confirmado ({res.score:.2f}) en yaw={self.sector_yaw:.2f}"
                         )
+                        self.foto_img = self._ultima_img_obj
+                        self.foto_face = self._ultima_face_obj
                         if self.qrs_sector:
                             return 0.0, self._armar_resultado(self.sector_yaw, res, self.qrs_sector, True)
                         self.subestado = "BUSCAR_QR"
@@ -393,6 +409,8 @@ class EscaneoObjetivo:
                         return 0.0, None
                     if self.mejor_objetivo is None or res.score > self.mejor_objetivo[1].score:
                         self.mejor_objetivo = (self.sector_yaw, res, list(self.qrs_sector))
+                        self.foto_img = self._ultima_img_obj
+                        self.foto_face = self._ultima_face_obj
                     self.eventos.append(
                         f"candidato {res.nombre} dudoso ({res.score:.2f}); sigo revisando caras"
                     )
@@ -426,6 +444,9 @@ class EscaneoObjetivo:
 
 # --- ROS ---------------------------------------------------------------------------
 
+CAMARA_HD = "/oakd/rgb/image_raw/compressed"   # FFMPEGPacket (H.264), no CompressedImage
+
+
 def args_parser():
     from gestos_teleop import add_gesture_args
     from navegacion import add_ros_args
@@ -442,6 +463,8 @@ def args_parser():
     ap.add_argument("--umbral", type=float, default=None, help="similitud SFace (0.363)")
     ap.add_argument("--voz", default="auto", choices=("auto", "windows", "linux", "ninguna"))
     ap.add_argument("--resultado", help="guardar el resultado en este JSON")
+    ap.add_argument("--camara-hd", action="store_true",
+                    help="camara 1280x720: usa el H.264 de la OAK-D (decodifica la laptop, casi no carga la Pi)")
     ap.add_argument("--ver", action="store_true", help="Tarea A: ventana con la camara")
     add_ros_args(ap)
     add_gesture_args(ap)
@@ -465,7 +488,7 @@ class Sistema:
         self.node = rclpy.create_node("mision")
         self.lidar = Lidar(self.node, args.scan, args.lidar_rot, args.lidar_mask)
         self.odom = Odom(self.node, args.odom)
-        self.cam = RobotCamera(self.node, args.robot_cam)
+        self.cam = RobotCamera(self.node, CAMARA_HD if args.camara_hd else args.robot_cam, h264=args.camara_hd)
         self.cam_t = 0.0
         self.parar = False
         self.node.create_subscription(Empty, "/mision/parar", self._on_parar, 10)
@@ -647,6 +670,8 @@ def _procesar_escaneo(escaneo, s, m, t, img):
         m.score = res["score"]
         m.seguro = res["seguro"]
         m.qr_objetivo = res["qr"]
+        m.foto_img = res.get("foto_img")
+        m.foto_face = res.get("foto_face")
         for q in res["qrs"]:
             if q not in m.hitos_qr:
                 m.hitos_qr.append(q)
@@ -669,6 +694,15 @@ def _texto_anuncio(m):
     if m.qr_objetivo:
         return f"{nombre}, QR {m.qr_objetivo}"
     return nombre
+
+
+def _completar_anuncio(s, m):
+    if m.foto_img is not None:
+        m.foto_path = s.anunciador.enviar_foto(
+            m.nombre or "desconocido", m.foto_img, m.foto_face, m.score
+        )
+    s.anunciador.anunciar(_texto_anuncio(m))
+    m.ir(FIN)
 
 
 def tarea_a(args, s, m, piloto):
@@ -732,8 +766,7 @@ def tarea_a(args, s, m, piloto):
             s.sender.send(lin, ang)
         elif m.estado == ANUNCIAR:
             s.sender.stop()
-            s.anunciador.anunciar(_texto_anuncio(m))
-            m.ir(FIN)
+            _completar_anuncio(s, m)
         if args.ver and img is not None:
             cv2.putText(img, f"{m.estado} {m.tiempo():.1f}s", (5, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -775,6 +808,8 @@ class PilotoGuiado:
         self.t_senal = -1e9
         self.cont_bandera = 0
         self.min_dist_cruce = 0.85
+        self.senal_cerca = False
+        self._t0 = None
 
     def iniciar(self, odom_pose, ranges, angles):
         self.piloto.fijar_origen(odom_pose, ranges, angles)
@@ -804,7 +839,7 @@ class PilotoGuiado:
             "der": cls._dir_cardinal(rumbo - math.pi / 2.0),
         }
 
-    def registrar_senales(self, t, senales_vistas, mision=None):
+    def registrar_senales(self, t, senales_vistas, mision=None, alto_img=None):
         """Procesa las senales detectadas en un frame de camara. Devuelve True si se confirmo
         la llegada a B por bandera (`bandera_frames` seguidos)."""
         vio_bandera = False
@@ -828,6 +863,7 @@ class PilotoGuiado:
                         mision.evento(f"senal detectada: {s.tipo} (conf={s.confianza:.2f})")
                 self.senal_pendiente = s
                 self.t_senal = t
+                self.senal_cerca = bool(alto_img) and (s.bbox[3] / alto_img) >= self.mp.senal_cerca_alto
 
         if vio_bandera and self.mp.senal_bandera == "llegada_b":
             self.cont_bandera += 1
@@ -848,9 +884,11 @@ class PilotoGuiado:
         pose = self.piloto.pose(odom_pose)
         r, a = nc.clean_scan(ranges, angles, self.piloto.nav.scan_min)
         pto = ps.analizar_pasillo(r, a, self.pp_pasillo, self.piloto.nav)
+        if self._t0 is None:
+            self._t0 = t
 
-        # Caducar senal pendiente si quedo muy atras
-        if self.senal_pendiente is not None and (t - self.t_senal) > 6.5:
+        # Caducar senal pendiente si quedo muy atras (~2.1 m a 0.14 m/s)
+        if self.senal_pendiente is not None and (t - self.t_senal) > 15.0:
             self.senal_pendiente = None
 
         alineado = abs(nc.wrap(pose[2] - self.rumbo_pasillo)) < math.radians(28.0)
@@ -878,7 +916,17 @@ class PilotoGuiado:
 
         # Si hay cruce nuevo o pared frontal y ya estamos alineados en el pasillo, decidir
         puede_cruce = pto.en_cruce and lejos_de_ultimo and self.retrocediendo_hasta_idx is None
-        if alineado and (puede_cruce or puede_frente):
+        # Flecha de giro cercana con el frente cerrandose: es el punto donde hay que girar
+        puede_flecha = (
+            getattr(self.senal_pendiente, "tipo", None) in ("izq", "der") and self.senal_cerca
+            and pto.dist_frente < 1.5 and lejos_de_ultimo and self.retrocediendo_hasta_idx is None
+            and (t - self.t_ultima_decision) >= 2.5
+        )
+        # En el arranque no decidir hasta haberse movido (el LiDAR pegado a la caja de salida da opciones=[])
+        inicio_ok = (self.ultima_accion is not None
+                     or math.hypot(pose[0], pose[1]) >= self.mp.inicio_min_dist
+                     or (t - self._t0) >= 6.0)
+        if alineado and inicio_ok and (puede_cruce or puede_frente or puede_flecha):
             key = self._clave_cruce(pose[0], pose[1])
             vis_mundo = self.visitas_cruce.setdefault(key, {})
             ago_mundo = self.agotadas_cruce.setdefault(key, set())
@@ -891,8 +939,15 @@ class PilotoGuiado:
             if mision is not None and mision.estado != DECIDIR:
                 mision.ir(DECIDIR, f"opciones={sorted(pto.opciones)}")
 
+            opciones = set(pto.opciones)
+            tipo_sen = getattr(self.senal_pendiente, "tipo", None)
+            # Una flecha se obedece si el lado indicado deja pasar al robot (no hace falta un cruce "ancho")
+            if tipo_sen == "izq" and pto.dist_izq >= self.pp_pasillo.open_side_flecha:
+                opciones.add("izq")
+            elif tipo_sen == "der" and pto.dist_der >= self.pp_pasillo.open_side_flecha:
+                opciones.add("der")
             accion = dc.decidir(
-                pto.opciones,
+                opciones,
                 senal=self.senal_pendiente,
                 visitado=vis_rel,
                 avisos=avisos,
@@ -909,7 +964,7 @@ class PilotoGuiado:
                 mision.decisiones.append(dict(
                     t=round(mision.tiempo(), 2),
                     pose=[round(pose[0], 2), round(pose[1], 2), round(pose[2], 2)],
-                    opciones=sorted(pto.opciones),
+                    opciones=sorted(opciones),
                     accion=accion,
                 ))
 
@@ -923,7 +978,17 @@ class PilotoGuiado:
                 # Marcar la rama por la que entramos al cruce anterior como agotada
                 if self.cruce_anterior_key is not None and self.dir_entrada is not None:
                     self.agotadas_cruce.setdefault(self.cruce_anterior_key, set()).add(self.dir_entrada)
-                self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo + math.pi)
+                if self.cruce_anterior_key is None and len(self.piloto.crumbs) <= 1:
+                    # Sin cruce previo ni migas no hay por donde "volver": invertir el rumbo
+                    # apuntaria a la pared trasera. Conservar el rumbo de arranque si deja avanzar;
+                    # solo si esta cerrado, ir al rumbo mas abierto (most_open se va a cualquier
+                    # hueco largo, incluso lateral, y dejaba al robot de costado contra la pared).
+                    rel = nc.wrap(self.rumbo_pasillo - pose[2])
+                    nav = self.piloto.nav
+                    if float(nc.free_distance(r, a, rel, nav)[0]) < nav.min_free:
+                        self.rumbo_pasillo = nc.wrap(pose[2] + nc.most_open(r, a, nav))
+                else:
+                    self.rumbo_pasillo = nc.wrap(self.rumbo_pasillo + math.pi)
                 if len(self.piloto.crumbs) > 1:
                     self.retrocediendo_hasta_idx = min(self.cruce_anterior_miga_idx, len(self.piloto.crumbs) - 2)
                     self._retroceso_upto = len(self.piloto.crumbs) - 2
@@ -992,6 +1057,14 @@ def tarea_a_guiada(args, s, m, piloto):
         time.sleep(mp.cuenta)
     m.ir(SEGUIR, "modo guiado por senales + LiDAR")
     escaneo, t_cam = None, -1e9
+    espera_caras, t_cara = None, -1e9   # pausa breve antes de retroceder: busca caras en varios cuadros
+    traza, t_traza = None, -1e9
+    if m.log_path:   # traza ligera (cada 0.5 s) junto al log: pose, rumbo, comandos y distancias
+        traza = open(m.log_path[:-4] + "_traza.csv", "w", encoding="utf-8")
+        traza.write("t,x,y,yaw_deg,rumbo_deg,lin,ang,frente,cerca,estado\n")
+    if args.ver:   # ventana a ~30 fps en su propio hilo (no depende del ciclo de control)
+        s.cam.visor("mision A guiada", texto=lambda: f"{m.estado} {m.tiempo():.1f}s",
+                    analizar=_anotador(s))
 
     while m.activa():
         s.spin(1.0 / mp.rate)
@@ -1000,15 +1073,34 @@ def tarea_a_guiada(args, s, m, piloto):
             continue
         _volcar_eventos_piloto(s, m, piloto)
 
-        img = s.frame_nuevo() if m.estado in (SEGUIR, DECIDIR, LLEGADA_B, ESCANEAR) or args.ver else None
+        img = s.frame_nuevo() if m.estado in (SEGUIR, DECIDIR, LLEGADA_B, ESCANEAR) else None
+
+        if espera_caras is not None:
+            # Quieto, mirando al frente: el detector de caras puede fallar en un cuadro suelto
+            s.sender.send(0.0, 0.0)
+            if (t - t_cara) >= 0.3:
+                t_cara = t
+                frame = img if img is not None else s.cam.latest()
+                if frame is not None and len(s.rostros.detectar(frame)[1]) > 0:
+                    m.ir(LLEGADA_B, "caras detectadas al final del pasillo")
+                    m.ir(ESCANEAR, "analizando rostros en B")
+                    escaneo = _crear_escaneo(s, mp, t)
+                    espera_caras = None
+                    continue
+            if t >= espera_caras:
+                espera_caras = None
+                m.evento("sin caras tras la pausa: retrocedo por migas")
+            continue
 
         if m.estado in (SEGUIR, DECIDIR):
             t_p = m.perfil.reloj()
             if img is not None and (t - t_cam) >= mp.cam_periodo:
                 t_cam = t
                 # Filtro rapido en preview antes de correr el detector completo (ahorro CPU Pi)
-                senales_vistas = sf.detectar(img, esfuerzo_qr=1) if sf.buscar_candidatos(img) else []
-                if guiado.registrar_senales(t, senales_vistas, m):
+                chica = img if img.shape[1] <= 640 else cv2.resize(
+                    img, (640, round(img.shape[0] * 640 / img.shape[1])), interpolation=cv2.INTER_AREA)
+                senales_vistas = sf.detectar(chica, esfuerzo_qr=1) if sf.buscar_candidatos(chica) else []
+                if guiado.registrar_senales(t, senales_vistas, m, alto_img=chica.shape[0]):
                     s.sender.send(0.0, 0.0)
                     m.ir(LLEGADA_B, "bandera de cuadros confirmada")
                     m.ir(ESCANEAR, "analizando rostros en B")
@@ -1022,6 +1114,26 @@ def tarea_a_guiada(args, s, m, piloto):
                 m.ir(ESCANEAR, "analizando rostros en B")
                 escaneo = _crear_escaneo(s, mp, t)
                 continue
+            if guiado.ultima_accion == "retroceder" and guiado.t_ultima_decision == t:
+                frame = img if img is not None else s.cam.latest()
+                if frame is not None and len(s.rostros.detectar(frame)[1]) > 0:
+                    s.sender.send(0.0, 0.0)
+                    m.ir(LLEGADA_B, "caras detectadas al final del pasillo")
+                    m.ir(ESCANEAR, "analizando rostros en B")
+                    escaneo = _crear_escaneo(s, mp, t)
+                    continue
+                if len(piloto.crumbs) > 2:   # no al arrancar: solo si ya recorrio un tramo
+                    espera_caras, t_cara = t + 1.5, t
+                    m.evento("frente cerrado: pausa 1.5 s buscando caras antes de retroceder")
+                    s.sender.send(0.0, 0.0)
+                    continue
+            if traza and (t - t_traza) >= 0.5:
+                t_traza = t
+                p = info["pose"]
+                traza.write(f"{m.tiempo():.1f},{p[0]:.2f},{p[1]:.2f},{math.degrees(p[2]):.0f},"
+                            f"{math.degrees(guiado.rumbo_pasillo):.0f},{lin:.3f},{ang:.2f},"
+                            f"{info['front']:.2f},{info['nearest']:.2f},{info['estado']}\n")
+                traza.flush()
             s.sender.send(lin, ang)
         elif m.estado == ESCANEAR:
             ang, listo = _procesar_escaneo(escaneo, s, m, t, img)
@@ -1043,13 +1155,40 @@ def tarea_a_guiada(args, s, m, piloto):
             s.sender.send(lin, ang)
         elif m.estado == ANUNCIAR:
             s.sender.stop()
-            s.anunciador.anunciar(_texto_anuncio(m))
-            m.ir(FIN)
-        if args.ver and img is not None:
-            cv2.putText(img, f"{m.estado} {m.tiempo():.1f}s", (5, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.imshow("mision A guiada", img)
-            cv2.waitKey(1)
+            _completar_anuncio(s, m)
+
+
+
+def _anotador(s):
+    """Cajas para la ventana --ver: caras (con nombre y similitud, verde si supera el umbral) y
+    senales (cian). Usa su PROPIO detector de caras: el de la mision no es seguro entre hilos."""
+    import cv2
+    import facial
+    import senales_forma as sf
+    rostros = facial.Rostros()
+
+    def analizar(img):
+        out = []
+        chica = img if img.shape[1] <= 640 else cv2.resize(
+            img, (640, round(img.shape[0] * 640 / img.shape[1])), interpolation=cv2.INTER_AREA)
+        H, W = chica.shape[:2]
+        for sg in sf.detectar(chica, esfuerzo_qr=0):
+            x, y, w, h = sg.bbox
+            et = f"{sg.tipo} {sg.confianza:.2f}" + (f" {sg.texto}" if sg.texto else "")
+            out.append((x / W, y / H, w / W, h / H, et, (255, 255, 0)))
+        big, caras = rostros.detectar(img)
+        bh, bw = big.shape[:2]
+        for f in caras[:4]:
+            et, col = "cara", (0, 165, 255)
+            if s.galeria.nombres:
+                sims = s.galeria.similitudes(rostros.embedding(big, f))
+                k = int(sims.argmax())
+                et = f"{s.galeria.nombres[k]} {sims[k]:.2f}"
+                col = (0, 255, 0) if sims[k] >= s.umbral else (0, 165, 255)
+            x, y, w, h = f[:4]
+            out.append((x / bw, y / bh, w / bw, h / bh, et, col))
+        return out
+    return analizar
 
 
 def tarea_b(args, s, m):

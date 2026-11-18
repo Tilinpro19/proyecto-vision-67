@@ -239,24 +239,51 @@ def angular_limit(max_angular, nearest_dist, p=NavParams()):
 
 
 class ProgressMonitor:
-    """Atasco = en los ultimos 'window' s el robot no se alejo 'min_progress' m del punto
-    donde estaba al inicio de la ventana."""
+    """Atasco = el robot no avanza 'min_progress' m en una ventana de tiempo.
 
-    def __init__(self, window=5.0, min_progress=0.08):
+    Dos casos (self.motivo): "empuja" = lleva 'window' s mandando velocidad de verdad
+    (esfuerzo medio >= min_effort) y no se mueve: choque con algo bajo/rueda trabada.
+    "espera" = casi no manda velocidad (frena a proposito ante un obstaculo o gira): solo se
+    considera atasco tras 'window_wait' s, para no confundir frenar con estar trabado."""
+
+    def __init__(self, window=5.0, min_progress=0.08, window_wait=None, min_effort=0.03):
         self.window, self.min_progress = window, min_progress
+        self.window_wait = max(window, window_wait if window_wait is not None else window)
+        self.min_effort = min_effort
+        self.motivo = None
         self.hist = deque()
 
     def reset(self):
         self.hist.clear()
+        self.motivo = None
 
-    def update(self, t, xy):
-        self.hist.append((t, np.asarray(xy, float)))
-        while len(self.hist) > 1 and t - self.hist[1][0] >= self.window:
+    def _sin_avance(self, t, w):
+        """(sin_avance, esfuerzo_medio) en los ultimos w s; None si aun no hay w s de historia."""
+        idx = [i for i, h in enumerate(self.hist) if t - h[0] >= w]
+        if not idx:
+            return None
+        tramo = list(self.hist)[idx[-1]:]
+        p0 = tramo[0][1]
+        mov = max(np.linalg.norm(h[1] - p0) for h in tramo)
+        esf = float(np.mean([h[2] for h in tramo]))
+        return mov < self.min_progress, esf
+
+    def update(self, t, xy, effort=None):
+        """effort = velocidad lineal mandada (m/s); None = se asume que empuja."""
+        e = 1.0 if effort is None else abs(float(effort))
+        self.hist.append((t, np.asarray(xy, float), e))
+        while len(self.hist) > 1 and t - self.hist[1][0] >= self.window_wait:
             self.hist.popleft()
-        t0, p0 = self.hist[0]
-        if t - t0 < self.window:
-            return False
-        return max(np.linalg.norm(q - p0) for _, q in self.hist) < self.min_progress
+        self.motivo = None
+        r = self._sin_avance(t, self.window)
+        if r and r[0] and r[1] >= self.min_effort:
+            self.motivo = "empuja"
+            return True
+        r = self._sin_avance(t, self.window_wait)
+        if r and r[0]:
+            self.motivo = "espera"
+            return True
+        return False
 
 
 # --- poses 2D (x, y, yaw) -------------------------------------------------------

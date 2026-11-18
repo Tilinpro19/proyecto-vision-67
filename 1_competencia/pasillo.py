@@ -15,6 +15,7 @@ class PasilloParams:
     open_front: float = 0.90     # m libres al frente para considerar disponible "recto"
     block_front: float = 0.80    # m al frente por debajo de los cuales se obliga a decidir
     open_side: float = 1.15      # m libres a izq/der para considerar un pasillo lateral abierto
+    open_side_flecha: float = 0.60  # m libres laterales para OBEDECER una flecha (basta con que quepa el robot)
     wall_max: float = 1.05       # m maximos para usar una pared en el centrado lateral
     k_center: float = 0.85       # rad de correccion de rumbo por m de descentrado
     max_corr_rad: float = 0.45   # limite de correccion angular por centrado

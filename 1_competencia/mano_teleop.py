@@ -35,6 +35,7 @@ Seguridad:
 """
 import argparse
 import os
+import threading
 import time
 from collections import deque
 
@@ -288,18 +289,35 @@ class HandTracker:
 class RobotCamera:
     """Ultima imagen de la camara del robot (CompressedImage, QoS sensor data)."""
 
-    def __init__(self, node, topic):
-        self.node, self.topic = node, topic
+    def __init__(self, node, topic, h264=False):
+        """h264=True: el topic lleva FFMPEGPacket (H.264 1280x720 hecho por la OAK-D, la Pi solo
+        reenvia paquetes: cuesta ~3 puntos de un nucleo en la Pi frente a ~9 del JPEG de 250 px).
+        Se decodifica aqui, en la laptop, con PyAV."""
+        self.node, self.topic, self.h264 = node, topic, h264
         self.msg = None
         self.img = None
         self.last_t = 0.0
         self._sub = None
+        self._dec = None
+        self._espera_clave = True
+        self._cola = deque()
+        self._hay = threading.Event()
         self.reanudar()
 
     def reanudar(self):
         """Se suscribe a la camara (no hace nada si ya lo esta)."""
         if self._sub is None:
             from rclpy.qos import qos_profile_sensor_data
+            if self.h264:
+                import av
+                from ffmpeg_image_transport_msgs.msg import FFMPEGPacket
+                self._dec = av.CodecContext.create("h264", "r")
+                self._espera_clave = True   # un P-frame sin su clave sale corrupto
+                self._cola.clear()
+                self._sub = self.node.create_subscription(
+                    FFMPEGPacket, self.topic, self._on_packet, qos_profile_sensor_data)
+                threading.Thread(target=self._decodificar, args=(self._dec,), daemon=True).start()
+                return
             from sensor_msgs.msg import CompressedImage
             self._sub = self.node.create_subscription(
                 CompressedImage, self.topic, self._on_image, qos_profile_sensor_data)
@@ -309,10 +327,87 @@ class RobotCamera:
         nucleo) aunque no se decodifique. Se usa mientras el robot solo navega."""
         if self._sub is not None:
             self.node.destroy_subscription(self._sub)
-            self._sub, self.msg = None, None
+            self._sub, self.msg, self._dec = None, None, None
 
     def _on_image(self, msg):
         self.msg = msg
+
+    def _on_packet(self, msg):
+        """Solo encola (barato): el decode H.264 corre en su propio hilo para que el bucle de
+        control no lo pague. Si el decoder se atrasa, descarta la cola y espera cuadro clave."""
+        if len(self._cola) > 45:
+            self._cola.clear()
+            self._espera_clave = True
+        self._cola.append((msg.flags, bytes(msg.data)))
+        self._hay.set()
+
+    def _decodificar(self, dec):
+        """Hilo: decodifica paquetes H.264; descarta hasta el primer cuadro clave (flags & 1)."""
+        import av
+        while self._dec is dec:
+            self._hay.wait(0.5)
+            self._hay.clear()
+            while self._cola and self._dec is dec:
+                flags, data = self._cola.popleft()
+                if self._espera_clave:
+                    if not (flags & 1):
+                        continue
+                    self._espera_clave = False
+                try:
+                    for fr in dec.decode(av.Packet(data)):
+                        self.img, self.last_t = fr.to_ndarray(format="bgr24"), time.monotonic()
+                except Exception:
+                    self._espera_clave = True      # paquete perdido: esperar al proximo cuadro clave
+
+    def visor(self, titulo, ancho=640, texto=None, analizar=None, hz=4.0):
+        """Ventana en su propio hilo, ~30 fps con la ultima imagen, sin depender del bucle de
+        control. 'texto' devuelve la linea a superponer. 'analizar(img)' (opcional) devuelve cajas
+        [(x, y, w, h, etiqueta, (b, g, r))] con x,y,w,h NORMALIZADOS 0..1; corre en otro hilo a
+        'hz' Hz y el visor dibuja las ultimas (se descartan si tienen >0.8 s)."""
+        cajas = [0.0, []]
+
+        def _analisis():
+            ult = 0.0
+            while True:
+                time.sleep(1.0 / hz)
+                img = self.img
+                if img is None or self.last_t == ult:
+                    continue
+                ult = self.last_t
+                try:
+                    cajas[:] = [time.monotonic(), analizar(img)]
+                except Exception as e:
+                    print(f"[visor] analisis fallo: {e}", flush=True)
+                    time.sleep(2.0)
+
+        def _run():
+            ult = 0.0
+            while True:
+                if self.last_t == ult:
+                    time.sleep(0.005)
+                    continue
+                ult, img = self.last_t, self.img
+                if img is None:
+                    continue
+                h, w = img.shape[:2]
+                if w > ancho:
+                    img = cv2.resize(img, (ancho, round(h * ancho / w)), interpolation=cv2.INTER_AREA)
+                else:
+                    img = img.copy()
+                H, W = img.shape[:2]
+                if time.monotonic() - cajas[0] < 0.8:
+                    for x, y, bw, bh, et, col in cajas[1]:
+                        p1 = (int(x * W), int(y * H))
+                        cv2.rectangle(img, p1, (int((x + bw) * W), int((y + bh) * H)), col, 2)
+                        cv2.putText(img, et, (p1[0], max(12, p1[1] - 5)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
+                if texto:
+                    cv2.putText(img, texto(), (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                cv2.imshow(titulo, img)
+                cv2.waitKey(1)
+        if analizar:
+            threading.Thread(target=_analisis, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
 
     def latest(self):
         """Decodifica la imagen nueva (si llego) y devuelve la ultima valida o None."""

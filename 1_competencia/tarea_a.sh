@@ -5,6 +5,7 @@
 # Robot distinto: ROBOT_IP=192.168.0.105 ROBOT_ID=68 ./tarea_a.sh ...
 cd "$(dirname "$0")" || exit 1
 source /opt/ros/jazzy/setup.bash
+[ -f "$HOME/ros_extra/env.sh" ] && source "$HOME/ros_extra/env.sh"   # FFMPEGPacket para --camara-hd
 if [ -z "$TB4_IP" ]; then
   if [ -z "$ROBOT_IP" ] && [ -f ~/.tb4_robot ]; then
     source ~/.tb4_robot

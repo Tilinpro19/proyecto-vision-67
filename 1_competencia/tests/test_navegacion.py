@@ -200,3 +200,19 @@ def test_obstaculo_bajo_y_bumper_no_caducan():
     assert n_bumper > 0
     piloto.virtual.prune_expired(1000.0, piloto.pp.virtual_ttl)
     assert len(piloto.virtual.points) == n_bumper
+
+
+def test_monitor_no_confunde_frenar_con_atascarse():
+    # Avanza a ~0.003 m/s (frena ante algo cercano): no es atasco a los 5 s ...
+    m = nc.ProgressMonitor(window=5.0, min_progress=0.08, window_wait=15.0)
+    assert not any(m.update(t * 0.1, (t * 0.0003, 0.0), 0.003) for t in range(140))
+    # ... pero si sigue asi 15 s se reposiciona, marcado como espera (sin barreras)
+    assert m.update(15.0, (0.0045, 0.0), 0.003)
+    assert m.motivo == "espera"
+
+
+def test_monitor_empujando_sin_moverse_sigue_siendo_atasco():
+    m = nc.ProgressMonitor(window=5.0, min_progress=0.08, window_wait=15.0)
+    assert not any(m.update(t * 0.1, (0.0, 0.0), 0.10) for t in range(50))
+    assert m.update(5.0, (0.0, 0.0), 0.10)
+    assert m.motivo == "empuja"
