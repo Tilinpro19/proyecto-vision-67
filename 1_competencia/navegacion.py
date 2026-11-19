@@ -103,6 +103,12 @@ class Piloto:
         self.upto = len(self.crumbs) - 1
         self._reset_motion()
 
+    def reanudar(self):
+        """Tras una maniobra hecha fuera de paso() (p. ej. giro en el sitio): sin rampas,
+        monitor de atasco ni dt viejos (un dt de 0.5 s dejaria acelerar de golpe)."""
+        self._reset_motion()
+        self.last_t = None
+
     def pose(self, odom_pose):
         return nc.compose(self.corr, nc.relative(self.origin, odom_pose))
 
