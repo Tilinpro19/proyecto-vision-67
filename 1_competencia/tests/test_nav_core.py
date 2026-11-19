@@ -222,3 +222,27 @@ def test_mask_sector_ignora_solo_la_pieza_fija():
     # se van los de 180, 175 y -178 grados cerca; se quedan el de 120 grados y el lejano
     assert sorted(np.round(np.degrees(a2)).tolist()) == [120.0, 180.0]
     assert sorted(r2.tolist()) == [0.2, 1.5]
+
+
+def _pared_lateral(dl, dr):
+    pts = np.array([(x, y) for x in np.arange(-0.2, 3.0, 0.02) for y in (dl, -dr)])
+    return np.hypot(pts[:, 0], pts[:, 1]), np.arctan2(pts[:, 1], pts[:, 0])
+
+
+def test_pared_lateral_dentro_del_margen_no_bloquea_el_frente():
+    # Regresion: pared de carton a 0.25 m (> radio real 0.17, < inflado 0.31) dejaba free=0 y heading=None
+    p = nc.NavParams(safety_margin=0.14)
+    r, a = _pared_lateral(0.25, 0.45)
+    assert nc.free_distance(r, a, 0.0, p)[0] > 1.0
+    assert nc.choose_heading(r, a, 0.0, 0.0, p) is not None
+
+
+def test_pared_dentro_del_radio_real_si_bloquea():
+    p = nc.NavParams(safety_margin=0.14)
+    r, a = _pared_lateral(0.12, 0.45)
+    assert nc.free_distance(r, a, 0.0, p)[0] < 0.2
+
+
+def test_obstaculo_frontal_dentro_del_margen_sigue_frenando():
+    p = nc.NavParams(safety_margin=0.14)
+    assert nc.free_distance(np.array([0.25]), np.array([0.0]), 0.0, p)[0] < p.stop_dist
