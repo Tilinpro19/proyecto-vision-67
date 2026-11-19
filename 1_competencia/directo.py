@@ -57,6 +57,8 @@ class DirectoParams:
     cara_min: float = 0.05       # fraccion del ancho de imagen para contar una cara
     cara_vigencia: float = 1.0   # s    una cara vista hace menos de esto cuenta
     t_mirar: float = 1.2         # s    frenado mirando al frente en un callejon
+    barrido_deg: float = 60.0    # tras mirar al frente, gira +-esto buscando caras (0 = no)
+    w_barrido: float = 0.8       # rad/s del barrido (lento: la camara no sale movida)
     max_callejones: int = 2      # callejones sin caras antes de escanear igual
     bandera_frames: int = 2
     d_bandera: float = 1.0       # m    la bandera confirma la llegada solo a menos de esto
@@ -105,6 +107,7 @@ class PilotoDirecto:
         self.t_cara = -1e9
         self.cont_bandera = 0
         self.t_mirar0 = None
+        self._barrido = []
         self.motivo_llegada = None
         self.eventos = []             # textos para el registro
         self.decisiones = []          # dict(t, pose, opciones, senal, accion)
@@ -174,13 +177,22 @@ class PilotoDirecto:
         if self.estado == MIRAR:
             if self.t_mirar0 is None:
                 self.t_mirar0 = t
+                b = math.radians(self.dp.barrido_deg)
+                self._barrido = [self.rumbo + b, self.rumbo - b] if b > 0 else []
             if t - self.t_cara < self.dp.cara_vigencia:
                 self.resultado_mirar(True)
                 return 0.0, 0.0, self._info(pose, "llegada_b")
-            if t - self.t_mirar0 >= self.dp.t_mirar:
-                llego = self.resultado_mirar(False)
-                return 0.0, 0.0, self._info(pose, "llegada_b" if llego else None)
-            return 0.0, 0.0, self._info(pose, "mirar")
+            if t - self.t_mirar0 < self.dp.t_mirar:
+                return 0.0, 0.0, self._info(pose, "mirar")
+            # al frente no hay caras: barrido corto (pueden estar en una pared lateral)
+            while self._barrido:
+                err = nc.wrap(self._barrido[0] - pose[2])
+                if abs(err) > math.radians(self.dp.tol_giro_deg):
+                    w = float(np.clip(self.dp.k_giro * err, -self.dp.w_barrido, self.dp.w_barrido))
+                    return 0.0, w, self._info(pose, "mirar")
+                self._barrido.pop(0)
+            llego = self.resultado_mirar(False)
+            return 0.0, 0.0, self._info(pose, "llegada_b" if llego else None)
         if self.estado == GIRAR:
             err = nc.wrap(self.rumbo_obj - pose[2])
             if abs(err) < math.radians(self.dp.tol_giro_deg):

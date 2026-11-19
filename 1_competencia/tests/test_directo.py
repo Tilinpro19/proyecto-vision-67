@@ -214,6 +214,20 @@ def test_callejon_sin_caras_da_media_vuelta_y_sigue():
     assert any("media vuelta" in e for e in res["d"].eventos)
 
 
+def test_callejon_con_caras_en_pared_lateral_las_encuentra_con_el_barrido():
+    # Callejon de 1.2 m de ancho; la cara esta en la pared izquierda cerca del fondo:
+    # al frente no se ve, el barrido de +-60 grados si la encuentra (no da media vuelta).
+    paredes = [((-0.8, -0.6), (-0.8, 0.6)), ((-0.8, -0.6), (3.0, -0.6)),
+               ((-0.8, 0.6), (3.0, 0.6)), ((3.0, -0.6), (3.0, 0.6))]
+    objetos = [("cara", (2.5, 0.6), DER_Y)]
+    res = simular_directo(paredes, objetos)
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    assert res["d"].motivo_llegada == "callejon con caras"
+    assert res["d"].callejones == 0
+    assert _en_a(res)
+
+
 def test_prohibido_al_fondo_toma_la_salida_lateral():
     # T: el pasillo recto sigue hasta x=4.6 (callejon con "prohibido" en el fondo); la salida
     # a la izquierda (x=2.0..3.2) lleva a las caras. Debe doblar SIN entrar al recto.
