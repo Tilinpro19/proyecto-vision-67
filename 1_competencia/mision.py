@@ -1113,7 +1113,7 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
                     d.ver_caras(t, s.vista_cara(img))
             lin, ang, info = d.paso(t, s.odom.pose, r, a, bumper_hit=s.bump())
             if "front" in info:   # libre inflado de Piloto -> distancia aproximada a la pared
-                frente = info["front"] + piloto.nav.inflate
+                frente = info.get("frente_crudo", info["front"] + piloto.nav.inflate)
             m.perfil.registrar(t_p)
             if info["accion"] == "llegada_b":
                 s.sender.send(0.0, 0.0)
@@ -1135,7 +1135,7 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
                 m.ir(VOLVER_A_A, f"regreso por migas a {dp.v_regreso:.2f} m/s")
         elif m.estado == VOLVER_A_A:
             t_p = m.perfil.reloj()
-            lin, ang, info = piloto.paso(t, s.odom.pose, *s.lidar.data, bumper_hit=s.bump())
+            lin, ang, info = d.regreso(t, s.odom.pose, *s.lidar.data, bumper_hit=s.bump())
             m.perfil.registrar(t_p)
             if info["llegada"]:
                 s.sender.stop()

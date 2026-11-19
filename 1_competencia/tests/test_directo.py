@@ -76,7 +76,7 @@ def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_ext
                 piloto.volver()
                 continue
         else:
-            lin, ang, info = piloto.paso(t, sim.odom, r, a)
+            lin, ang, info = d.regreso(t, sim.odom, r, a)
             if info["llegada"]:
                 return dict(ok=True, t=t, t_b=t_b, b_true=b_true, true=sim.true, d=d,
                             collisions=sim.collisions, min_clear=sim.min_clear)
@@ -245,6 +245,30 @@ def test_cruce_sin_flecha_y_recto_sin_caras_vuelve_y_toma_la_lateral():
     assert res["d"].callejones == 1
     assert res["d"].motivo_llegada in ("caras al frente", "callejon con caras")
     assert res["b_true"][1] > 1.5          # llego a las caras, no escaneo "igual" en otro lado
+
+
+def pista_angosta():
+    """Medida del primer intento real (diagnosticos del 2026-11-19): pasillo de 0.56 m, pared
+    a 0.32 m detras de A, caja con flecha 'der' a 1.19 m y la salida a la derecha
+    (x=0.62..1.19, 0.57 m de ancho) que lleva a las caras."""
+    return [((-0.32, -0.28), (-0.32, 0.28)), ((-0.32, 0.28), (1.19, 0.28)),
+            ((1.19, 0.28), (1.19, -2.5)), ((-0.32, -0.28), (0.62, -0.28)),
+            ((0.62, -0.28), (0.62, -2.5)), ((0.62, -2.5), (1.19, -2.5))]
+
+
+def test_pasillo_angosto_como_el_del_robot_real():
+    # Antes: decidia "callejon" a 0.7 m de la caja (calibrado para 1.2 m), rebotaba 3 veces y
+    # al volver no podia acercarse a A (margenes de ~0.63 m) -> atasco. Ahora: ancho medido.
+    res = simular_directo(pista_angosta(), [("der", (1.19, 0.0), IZQ_X), ("cara", (0.9, -2.5), IZQ_Y)])
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    assert _en_a(res)
+    d = res["d"]
+    assert abs(d.ancho - 0.56) < 0.05
+    assert [x["accion"] for x in d.decisiones] == ["der"]
+    assert 0.80 < d.decisiones[0]["pose"][0] < 1.0     # gira frente a la salida (centro 0.905)
+    assert d.callejones == 0 and d.modo_regreso == "tramos"
+    assert res["t"] < 70.0
 
 
 def test_prohibido_al_fondo_toma_la_salida_lateral():

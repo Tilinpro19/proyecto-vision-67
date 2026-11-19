@@ -35,11 +35,26 @@ class DirectoParams:
     v_acercar: float = 0.20      # m/s  con una flecha pendiente a menos de d_lento
     v_regreso: float = 0.26      # m/s  regreso a A por migas (camino conocido)
     d_lento: float = 1.2         # m    flecha a menos de esto -> v_acercar
-    d_giro: float = 0.72         # m    obedecer la flecha a esta distancia (hacia adelante)
-    d_frente: float = 0.70       # m    pared del fondo (LiDAR crudo) -> decidir (esquina / callejon).
-                                 #      Con pasillos de 1.2 m el centro del cruce queda a 0.6; no
-                                 #      bajar de inflate + stop_dist (~0.65) o Piloto frena antes.
-    lado_abierto: float = 1.0    # m    libre a +-90 grados para girar hacia la flecha
+    # Geometria adaptada al ancho del pasillo (medido con el LiDAR a +-90 grados): el centro
+    # del cruce queda a ~ancho/2 de la pared del fondo. d_giro / d_frente son los TOPES.
+    d_giro: float = 0.72         # m    obedecer la flecha a ancho/2 + 0.03 (tope)
+    d_frente: float = 0.70       # m    pared del fondo (LiDAR crudo) a ancho/2 + 0.03 -> decidir
+    d_min: float = 0.30          # m    nunca decidir mas cerca que esto de la pared del fondo
+    ancho_inicial: float = 1.2   # m    ancho supuesto hasta medirlo
+    lado_min: float = 0.55       # m    salida lateral: libre (crudo) >= max(lado_min,
+    lado_extra: float = 0.35     #      ancho/2 + lado_extra) a 75, 90 y 105 grados
+    # Cerca de una pared (acercandose a la flecha o llegando a A) va despacio con un margen
+    # frontal chico para "pegarse" como en un pasillo angosto; lejos rige config.json.
+    margen_cerca: float = 0.03   # m    safety_margin cerca
+    stop_cerca: float = 0.05     # m    stop_dist cerca (libre ya inflado)
+    min_free_cerca: float = 0.15  # m   min_free de choose_heading cerca (0.45 anula "recto")
+    lateral_cerca: float = 0.02  # m    lateral_margin en pasillo angosto (0.57 m: 11 cm por lado)
+    v_cerca: float = 0.10        # m/s  velocidad al llegar al punto de giro / a A
+    cerca_a: float = 0.8         # m    a menos de esto de A, regreso con margen chico
+    regreso_tramos: bool = True  # regreso deshaciendo los giros de la ida (seguidor de pasillo)
+    pasado_max: float = 0.5      # m    pasarse de un punto de giro mas que esto -> girar igual
+    ancho_estrecho: float = 0.8  # m    pasillo medido mas angosto: todo el regreso con margen
+    v_estrecho: float = 0.15     # m/s  chico y a lo sumo a esta velocidad
     w_giro: float = 1.4          # rad/s giro en el sitio (maximo)
     w_giro_min: float = 0.35     # rad/s para no quedarse arrastrando al final del giro
     k_giro: float = 2.2          # rad/s por rad de error
@@ -51,7 +66,17 @@ class DirectoParams:
     fov_deg: float = 69.0        # FOV horizontal de la camara (OAK-D Lite RGB)
     ventana_rango_deg: float = 3.0
     zanahoria: float = 1.4       # m    punto a seguir por el rumbo del pasillo
-    w_goal_recto: float = 4.0    # peso del rumbo en choose_heading durante el tramo recto
+    w_goal_recto: float = 4.0    # peso del rumbo en choose_heading (respaldo con Piloto)
+    # Seguidor de pasillo propio del tramo recto (Piloto queda de respaldo para obstaculos)
+    k_rumbo: float = 1.8         # rad/s por rad de error de rumbo
+    k_centro: float = 1.5        # rad de correccion por m de descentrado
+    centro_max: float = 0.35     # rad  correccion maxima por centrado
+    w_recto: float = 0.9         # rad/s maximo en el tramo recto
+    holgura_paso: float = 0.03   # m    franja (sobre el radio) que debe estar libre al frente
+    d_parada: float = 0.24       # m    algo en la franja a menos de esto (crudo) -> lineal 0
+    k_frenado: float = 0.8       # 1/s  lineal <= k (libre - d_parada)
+    t_bloqueo: float = 2.0       # s    franja bloqueada este tiempo -> Piloto (esquiva/escape)
+    t_respaldo: float = 5.0      # s    que maneja Piloto tras un bloqueo o choque
     slow_dist_recto: float = 0.50  # m libres (inflado) desde donde frena en el tramo recto
     centrado_max: float = 0.25   # m    correccion lateral maxima de la zanahoria
     cara_min: float = 0.05       # fraccion del ancho de imagen para contar una cara
@@ -112,7 +137,18 @@ class PilotoDirecto:
         self._barrido = []
         self._xy_decision = None       # donde se tomo la ultima decision
         self._t_giro0, self._t_giro_max = None, 0.0
+        self._t_prev, self._lin_prev = None, 0.0
+        self._t_bloq0 = None
+        self._piloto_hasta = -1e9
+        self._giro_desde = (0.0, 0.0, 0.0)
+        self.ruta = []                # giros de la ida: dict(xy, de, a)
+        self.media_vuelta = False
+        self.modo_regreso = None      # "tramos" | "migas"
+        self._vuelta = None
         self._clave_pasada = None      # ultimo cruce pasado de largo
+        self.ancho = self.dp.ancho_inicial
+        self._ancho_n = 0
+        self._dist_a = math.inf
         self.motivo_llegada = None
         self.eventos = []             # textos para el registro
         self.decisiones = []          # dict(t, pose, opciones, senal, accion)
@@ -208,15 +244,21 @@ class PilotoDirecto:
             if self._t_giro0 is None:
                 self._t_giro0 = t
                 self._t_giro_max = self.dp.factor_timeout * (abs(err) / self.dp.w_giro + 1.0)
+                self._giro_desde = (pose[0], pose[1], self.rumbo)
             vencido = t - self._t_giro0 > self._t_giro_max
             if vencido:
                 # rueda trabada / el Create 3 no deja girar: que Piloto (escape) se encargue
                 self.eventos.append(f"giro sin terminar en {t - self._t_giro0:.1f} s "
                                     f"(faltan {math.degrees(err):.0f} grados): sigo con Piloto")
             if abs(err) < math.radians(self.dp.tol_giro_deg) or vencido:
+                x0, y0, de = self._giro_desde
+                if abs(nc.wrap(self.rumbo_obj - de)) > 3.0:
+                    self.media_vuelta = True      # ida con tramo muerto: regreso por migas
+                self.ruta.append(dict(xy=(x0, y0), de=de, a=self.rumbo_obj))
                 self.rumbo = self.rumbo_obj
                 self.estado = RECTO
                 self.piloto.reanudar()
+                self._lin_prev, self._t_prev = 0.0, None
             else:
                 w = float(np.clip(self.dp.k_giro * err, -self.dp.w_giro, self.dp.w_giro))
                 if abs(w) < self.dp.w_giro_min:
@@ -231,6 +273,7 @@ class PilotoDirecto:
         alineado = abs(nc.wrap(pose[2] - self.rumbo)) < math.radians(self.dp.alineado_deg)
         fwd = self._adelante(pose)
         if alineado:
+            self._medir_ancho(pose, r, a)
             accion = self._quizas_decidir(t, pose, r, a, front, fwd)
             if accion is not None:
                 return 0.0, 0.0, self._info(pose, accion)
@@ -238,9 +281,78 @@ class PilotoDirecto:
                 return 0.0, 0.0, self._info(pose, None)
 
         lento = (fwd is not None and -0.3 < fwd < self.dp.d_lento) or front < self.dp.d_lento
-        self.piloto.pp.max_linear = self.dp.v_acercar if lento else self.dp.v_recto
-        self.piloto.retorno = False
-        # zanahoria por el rumbo (> 0.4 m: Piloto frena cerca de su meta), corrida hacia el
+        v = self.dp.v_acercar if lento else self.dp.v_recto
+        estrecho = self.ancho < self.dp.ancho_estrecho
+        if estrecho:
+            v = min(v, self.dp.v_estrecho)
+        cerca = front < self.dp.d_lento
+        if cerca:
+            # rampa hasta v_cerca en el punto de decision (no frena de golpe desde v_acercar)
+            falta = front - self._d_frente()
+            if fwd is not None and fwd > -0.3:
+                falta = min(falta, fwd - self._d_giro())
+            v = float(np.clip(self.dp.v_cerca + 0.6 * falta, self.dp.v_cerca, v))
+        if bumper_hit and t >= self._piloto_hasta:
+            self.eventos.append("bumper en tramo recto: maneja Piloto (escape)")
+            self._a_respaldo(t)
+        if t < self._piloto_hasta:
+            lin, ang, info = self._paso_piloto(t, odom_pose, ranges, angles, pose, r, a, v,
+                                               cerca, estrecho, bumper_hit)
+        else:
+            lin, ang, bloqueado = self._seguir_pasillo(t, pose, r, a, front, v)
+            self.piloto.registrar(odom_pose, ranges, angles)
+            if bloqueado:
+                self._t_bloq0 = t if self._t_bloq0 is None else self._t_bloq0
+                if t - self._t_bloq0 > self.dp.t_bloqueo:
+                    self.eventos.append("paso bloqueado en el tramo recto: maneja Piloto")
+                    self._a_respaldo(t)
+            else:
+                self._t_bloq0 = None
+            info = dict(pose=pose, front=front - nav.inflate, nearest=nc.nearest(r),
+                        estado="recto", llegada=False)
+        info["frente_crudo"] = front
+        info["accion"] = None
+        info["estado_directo"] = self.estado
+        return lin, ang, info
+
+    def _a_respaldo(self, t):
+        self._piloto_hasta = t + self.dp.t_respaldo
+        self._t_bloq0 = None
+        self.piloto.reanudar()
+        self.piloto.prev_heading = 0.0
+
+    def _seguir_pasillo(self, t, pose, r, a, front, v):
+        """Recto por el rumbo del pasillo, centrado entre las paredes de +-90 grados, con la
+        lineal limitada por lo que haya en la franja del ancho del robot. (lin, ang, bloqueado)"""
+        dp, nav = self.dp, self.piloto.nav
+        dt = 0.1 if self._t_prev is None else min(max(t - self._t_prev, 0.0), 0.5)
+        self._t_prev = t
+        err = nc.wrap(self.rumbo - pose[2])
+        izq = rango_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(10.0))
+        der = rango_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(10.0))
+        corr = 0.0
+        if izq is not None and der is not None and max(izq, der) < dp.ancho_inicial:
+            corr = float(np.clip(dp.k_centro * (izq - der) / 2.0, -dp.centro_max, dp.centro_max))
+        ang = dp.k_rumbo * (err + corr) + nc.wall_repulsion(r, a, nav)
+        ang = float(np.clip(ang, -dp.w_recto, dp.w_recto))
+        if len(r):
+            x, y = r * np.cos(a), r * np.sin(a)
+            m = (x > 0.05) & (np.abs(y) < nav.robot_radius + dp.holgura_paso)
+            x_obs = float(np.min(x[m])) if np.any(m) else math.inf
+        else:
+            x_obs = math.inf
+        lin = float(np.clip(dp.k_frenado * (x_obs - dp.d_parada), 0.0, v))
+        if abs(err + corr) > 0.6:
+            lin = 0.0       # muy torcido: primero corregir el rumbo
+        lin = min(lin, self._lin_prev + self.piloto.pp.max_accel * dt)
+        self._lin_prev = lin
+        return lin, ang, x_obs < dp.d_parada + 0.04
+
+    def _paso_piloto(self, t, odom_pose, ranges, angles, pose, r, a, v, cerca, estrecho, bumper_hit):
+        """Respaldo: Piloto (VFH + escape) con la zanahoria por el rumbo del pasillo."""
+        nav = self.piloto.nav
+        self.piloto.pp.max_linear = v
+        self.piloto.retorno = False        # zanahoria por el rumbo (> 0.4 m: Piloto frena cerca de su meta), corrida hacia el
         # centro del pasillo: descentrado, side_scale baja la velocidad y roza las paredes
         z = self.dp.zanahoria
         err = ps.analizar_pasillo(r, a, self.pp_pasillo, nav).error_centro
@@ -252,13 +364,132 @@ class PilotoDirecto:
         # mas tarde (slow_dist): la parada la decide d_frente, y stop_dist sigue igual.
         guardado = nav.w_goal, nav.slow_dist
         nav.w_goal = max(nav.w_goal, self.dp.w_goal_recto)
+        restaurar = self._margen_chico() if (cerca or estrecho) else (lambda: None)
         nav.slow_dist = max(nav.stop_dist + 0.1, min(nav.slow_dist, self.dp.slow_dist_recto))
         try:
             lin, ang, info = self.piloto.paso(t, odom_pose, ranges, angles, bumper_hit=bumper_hit)
         finally:
+            restaurar()
             nav.w_goal, nav.slow_dist = guardado
-        info["accion"] = None
-        info["estado_directo"] = self.estado
+        self._lin_prev = lin
+        return lin, ang, info
+
+    def _margen_chico(self):
+        """Cambia los margenes de Piloto a los de 'cerca'; devuelve como restaurarlos."""
+        nav = self.piloto.nav
+        guardado = nav.safety_margin, nav.stop_dist, nav.min_free, nav.lateral_margin
+        nav.safety_margin = min(nav.safety_margin, self.dp.margen_cerca)
+        nav.stop_dist = min(nav.stop_dist, self.dp.stop_cerca)
+        nav.min_free = min(nav.min_free, self.dp.min_free_cerca)
+        if self.ancho < self.dp.ancho_estrecho:
+            nav.lateral_margin = min(nav.lateral_margin, self.dp.lateral_cerca)
+
+        def restaurar():
+            nav.safety_margin, nav.stop_dist, nav.min_free, nav.lateral_margin = guardado
+        return restaurar
+
+    def regreso(self, t, odom_pose, ranges, angles, bumper_hit=False):
+        """Regreso a A. Por tramos (por defecto): deshace los giros de la ida con el mismo
+        seguidor de pasillo (en pasillos angostos Piloto no dobla las esquinas). Por migas
+        (Piloto + ICP) si la ida tuvo una media vuelta, sin giros registrados utiles, o si
+        el paso queda bloqueado. Devuelve (lin, ang, info) con info["llegada"], info["dist"]."""
+        if self.modo_regreso is None:
+            self.modo_regreso = ("tramos" if self.dp.regreso_tramos and not self.media_vuelta
+                                 else "migas")
+            self.eventos.append(f"regreso por {self.modo_regreso}")
+            if self.modo_regreso == "tramos":
+                pasos = [(g["xy"], nc.wrap(g["a"] + math.pi), nc.wrap(g["de"] + math.pi))
+                         for g in reversed(self.ruta)]
+                self._vuelta = dict(pasos=pasos, estado="girar",
+                                    obj=self._cardinal_rad(self.rumbo + math.pi))
+        if self.modo_regreso == "tramos":
+            out = self._regreso_tramos(t, odom_pose, ranges, angles, bumper_hit)
+            if out is not None:
+                return out
+            self.modo_regreso = "migas"
+            self.eventos.append("regreso por tramos bloqueado: sigo por migas")
+            self.piloto.volver()
+        return self._regreso_migas(t, odom_pose, ranges, angles, bumper_hit)
+
+    @staticmethod
+    def _cardinal_rad(rumbo):
+        return nc.wrap(round(nc.wrap(rumbo) / (math.pi / 2.0)) * (math.pi / 2.0))
+
+    def _regreso_tramos(self, t, odom_pose, ranges, angles, bumper_hit):
+        v, dp = self._vuelta, self.dp
+        pose = self.piloto.pose(odom_pose)
+        r, a = nc.clean_scan(ranges, angles, self.piloto.nav.scan_min)
+        dist_a = math.hypot(pose[0], pose[1])
+        info = dict(pose=pose, dist=dist_a, llegada=False, estado="tramos")
+        if bumper_hit:
+            return None
+        if v["estado"] == "girar":
+            err = nc.wrap(v["obj"] - pose[2])
+            if abs(err) < math.radians(dp.tol_giro_deg):
+                self.rumbo = v["obj"]
+                v["estado"] = "recto"
+                self._lin_prev, self._t_prev, self._t_bloq0 = 0.0, None, None
+            else:
+                w = float(np.clip(dp.k_giro * err, -dp.w_giro, dp.w_giro))
+                if abs(w) < dp.w_giro_min:
+                    w = math.copysign(dp.w_giro_min, err)
+                return 0.0, w, info
+        # recto hacia el proximo giro (o hacia A)
+        c, s_ = math.cos(self.rumbo), math.sin(self.rumbo)
+        front = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(8.0))
+        front = self.piloto.nav.max_range if front is None else front
+        if v["pasos"]:
+            (px, py), rumbo_llegada, rumbo_salida = v["pasos"][0]
+            falta = (px - pose[0]) * c + (py - pose[1]) * s_
+            lado = "izq" if nc.wrap(rumbo_salida - self.rumbo) > 0 else "der"
+            if ((falta <= 0.03 and self._lado_libre(r, a, pose, lado))
+                    or falta < -dp.pasado_max or front <= self._d_frente()):
+                v["pasos"].pop(0)
+                v["obj"] = rumbo_salida
+                v["estado"] = "girar"
+                return 0.0, 0.0, info
+        else:
+            falta = pose[0] * -c + pose[1] * -s_          # hacia A por el rumbo
+            if dist_a < self.piloto.pp.home_tol or falta <= 0.0 or (front <= dp.d_min and dist_a < 0.5):
+                info["llegada"] = True
+                return 0.0, 0.0, info
+        vmax = dp.v_regreso if self.ancho >= dp.ancho_estrecho else min(dp.v_regreso, dp.v_estrecho)
+        vmax = float(np.clip(dp.v_cerca + 0.6 * max(falta, 0.0), dp.v_cerca, vmax))
+        lin, ang, bloqueado = self._seguir_pasillo(t, pose, r, a, front, vmax)
+        if bloqueado:
+            self._t_bloq0 = t if self._t_bloq0 is None else self._t_bloq0
+            if t - self._t_bloq0 > dp.t_bloqueo:
+                return None
+        else:
+            self._t_bloq0 = None
+        return lin, ang, info
+
+    def _regreso_migas(self, t, odom_pose, ranges, angles, bumper_hit=False):
+        """Piloto por migas a v_regreso; en el ultimo tramo (o en pasillo angosto) despacio
+        y con margen chico: A puede estar a ~0.3 m de una pared, mas cerca de lo que Piloto
+        se acerca con los margenes de config.json (inflado + stop_dist ~0.63 m)."""
+        pp = self.piloto.pp
+        self.piloto.retorno = True
+        pp.max_linear = self.dp.v_regreso
+        restaurar = lambda: None  # noqa: E731
+        estrecho = self.ancho < self.dp.ancho_estrecho
+        if estrecho or self._dist_a < self.dp.cerca_a:
+            restaurar = self._margen_chico()
+            if estrecho:
+                pp.max_linear = min(pp.max_linear, self.dp.v_estrecho)
+            if self._dist_a < self.dp.cerca_a:
+                pp.max_linear = min(pp.max_linear, max(self.dp.v_cerca, 0.25 * self._dist_a + 0.05))
+        nav = self.piloto.nav
+        slow = nav.slow_dist
+        if estrecho or self._dist_a < self.dp.cerca_a:
+            nav.slow_dist = max(nav.stop_dist + 0.1, min(slow, self.dp.slow_dist_recto))
+        try:
+            lin, ang, info = self.piloto.paso(t, odom_pose, ranges, angles, bumper_hit=bumper_hit)
+        finally:
+            nav.slow_dist = slow
+            restaurar()
+            pp.max_linear = self.dp.v_regreso
+        self._dist_a = info["dist"]
         return lin, ang, info
 
     # --- internos -------------------------------------------------------------
@@ -322,8 +553,31 @@ class PilotoDirecto:
         """Salida lateral abierta y ya estamos frente a ella: libres los rayos a 90 +- 15 grados
         (respecto del rumbo del pasillo). Con solo 90 se giraria al asomar el borde del hueco."""
         signo = 1.0 if lado == "izq" else -1.0
-        bs = nc.wrap(self.rumbo + signo * np.radians([75.0, 90.0, 105.0]) - pose[2])
-        return bool(np.all(nc.free_distance(r, a, bs, self.piloto.nav) >= self.dp.lado_abierto))
+        umbral = max(self.dp.lado_min, 0.5 * self.ancho + self.dp.lado_extra)
+        for g in (75.0, 90.0, 105.0):
+            d = rango_en(r, a, nc.wrap(self.rumbo + signo * math.radians(g) - pose[2]), math.radians(4.0))
+            if d is not None and d < umbral:
+                return False
+        return True
+
+    def _d_frente(self):
+        return float(np.clip(0.5 * self.ancho + 0.03, self.dp.d_min, self.dp.d_frente))
+
+    def _d_giro(self):
+        return float(np.clip(0.5 * self.ancho + 0.03, self.dp.d_min, self.dp.d_giro))
+
+    def _medir_ancho(self, pose, r, a):
+        """Ancho del pasillo: paredes a +-90 grados del rumbo (solo si se ven las dos)."""
+        izq = rango_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(5.0))
+        der = rango_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(5.0))
+        if izq is None or der is None or max(izq, der) > self.dp.ancho_inicial:
+            return      # un lado abierto (cruce, sala): no es el ancho del pasillo
+        w = izq + der
+        if self._ancho_n < 5 or abs(w - self.ancho) < 0.25:
+            # las primeras lecturas fijan el ancho; despues solo cambios graduales (al asomar
+            # una salida lateral el rayo de +-90 salta y no debe agrandar los umbrales)
+            self.ancho = w if self._ancho_n == 0 else 0.7 * self.ancho + 0.3 * w
+            self._ancho_n += 1
 
     def _quizas_decidir(self, t, pose, r, a, front, fwd):
         p = self.pendiente
@@ -331,12 +585,12 @@ class PilotoDirecto:
         if p is not None and fwd is not None:
             if p["tipo"] == "prohibido":
                 # prohibido al frente: decide en la primera salida lateral o al llegar al letrero
-                por_flecha = fwd <= self.dp.d_giro or (
+                por_flecha = fwd <= self._d_giro() or (
                     fwd <= self.dp.d_prohibido
                     and (self._lado_libre(r, a, pose, "izq") or self._lado_libre(r, a, pose, "der")))
             else:
-                por_flecha = fwd <= self.dp.d_giro and self._lado_libre(r, a, pose, p["tipo"])
-        por_frente = front <= self.dp.d_frente
+                por_flecha = fwd <= self._d_giro() and self._lado_libre(r, a, pose, p["tipo"])
+        por_frente = front <= self._d_frente()
         lateral = self._lado_libre(r, a, pose, "izq") or self._lado_libre(r, a, pose, "der")
         lejos = (self._xy_decision is None
                  or math.dist(pose[:2], self._xy_decision) >= self.dp.dist_cruce)
@@ -352,10 +606,10 @@ class PilotoDirecto:
             self._llegar("caras al frente")
             return "llegada_b"
 
-        pto = ps.analizar_pasillo(r, a, self.pp_pasillo, self.piloto.nav)
-        opciones = set(pto.opciones)
-        if por_frente:
-            opciones.discard("recto")
+        # salidas con umbrales relativos al ancho medido (pasillo.py usa 1.15 m fijos)
+        opciones = {lado for lado in ("izq", "der") if self._lado_libre(r, a, pose, lado)}
+        if not por_frente and front >= self._d_frente() + self.dp.lado_extra:
+            opciones.add("recto")
         key = self._clave(pose)
         vis = self.visitas.setdefault(key, {})
         ago = self.agotadas.setdefault(key, set())

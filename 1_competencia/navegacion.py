@@ -109,6 +109,11 @@ class Piloto:
         self._reset_motion()
         self.last_t = None
 
+    def registrar(self, odom_pose, ranges, angles):
+        """Migas y keyframes de la ida cuando el control lo hace otro (seguidor de pasillo)."""
+        r, a = nc.clean_scan(ranges, angles, self.nav.scan_min)
+        self._registrar(self.pose(odom_pose), r, a)
+
     def pose(self, odom_pose):
         return nc.compose(self.corr, nc.relative(self.origin, odom_pose))
 
