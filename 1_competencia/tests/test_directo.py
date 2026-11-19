@@ -228,6 +228,25 @@ def test_callejon_con_caras_en_pared_lateral_las_encuentra_con_el_barrido():
     assert _en_a(res)
 
 
+def _t_con_salida_lateral():
+    """T: recto hasta x=4.6 (callejon SIN caras); a la izquierda (x=2.0..3.2) estan las caras."""
+    return [
+        ((-0.8, -0.6), (-0.8, 0.6)), ((-0.8, -0.6), (4.6, -0.6)), ((4.6, -0.6), (4.6, 0.6)),
+        ((-0.8, 0.6), (2.0, 0.6)), ((3.2, 0.6), (4.6, 0.6)),
+        ((2.0, 0.6), (2.0, 3.0)), ((3.2, 0.6), (3.2, 3.0)), ((2.0, 3.0), (3.2, 3.0)),
+    ]
+
+
+def test_cruce_sin_flecha_y_recto_sin_caras_vuelve_y_toma_la_lateral():
+    res = simular_directo(_t_con_salida_lateral(), [("cara", (2.6, 3.0), DER_Y)], t_max=240.0)
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    assert _en_a(res)
+    assert res["d"].callejones == 1
+    assert res["d"].motivo_llegada in ("caras al frente", "callejon con caras")
+    assert res["b_true"][1] > 1.5          # llego a las caras, no escaneo "igual" en otro lado
+
+
 def test_prohibido_al_fondo_toma_la_salida_lateral():
     # T: el pasillo recto sigue hasta x=4.6 (callejon con "prohibido" en el fondo); la salida
     # a la izquierda (x=2.0..3.2) lleva a las caras. Debe doblar SIN entrar al recto.
@@ -311,6 +330,24 @@ def test_giro_en_el_sitio_es_cardinal_y_no_acelera_de_golpe():
     assert d.estado == dr.RECTO
     assert abs(nc_wrap(sim.true[2] - math.pi / 2)) < math.radians(12)
     assert max(np.diff([0.0] + lins)) <= piloto.pp.max_accel * 0.1 + 1e-6
+
+
+def test_giro_trabado_no_bloquea_la_mision():
+    # odometria que no gira (rueda trabada): tras factor_timeout x lo esperado sigue en RECTO
+    paredes = pista_zigzag()
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    sim = Sim(paredes, start=(3.0, 0.0, 0.0))
+    d.iniciar(sim.odom, *sim.scan())
+    d._girar_a(math.pi / 2)
+    t = 0.0
+    while d.estado == dr.GIRAR and t < 30.0:
+        d.paso(t, sim.odom, *sim.scan())      # no se aplica el giro: el robot no rota
+        t += 0.1
+    esperado = dp.factor_timeout * (math.pi / 2 / dp.w_giro + 1.0)
+    assert d.estado == dr.RECTO
+    assert esperado - 0.2 <= t <= esperado + 0.3
+    assert any("giro sin terminar" in e for e in d.eventos)
 
 
 def nc_wrap(x):

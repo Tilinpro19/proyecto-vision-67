@@ -59,6 +59,8 @@ class DirectoParams:
     t_mirar: float = 1.2         # s    frenado mirando al frente en un callejon
     barrido_deg: float = 60.0    # tras mirar al frente, gira +-esto buscando caras (0 = no)
     w_barrido: float = 0.8       # rad/s del barrido (lento: la camara no sale movida)
+    factor_timeout: float = 3.0  # giro / barrido que tarda mas que esto x lo esperado = trabado
+    dist_cruce: float = 0.85     # m    entre decisiones / cruces pasados de largo
     max_callejones: int = 2      # callejones sin caras antes de escanear igual
     bandera_frames: int = 2
     d_bandera: float = 1.0       # m    la bandera confirma la llegada solo a menos de esto
@@ -108,6 +110,9 @@ class PilotoDirecto:
         self.cont_bandera = 0
         self.t_mirar0 = None
         self._barrido = []
+        self._xy_decision = None       # donde se tomo la ultima decision
+        self._t_giro0, self._t_giro_max = None, 0.0
+        self._clave_pasada = None      # ultimo cruce pasado de largo
         self.motivo_llegada = None
         self.eventos = []             # textos para el registro
         self.decisiones = []          # dict(t, pose, opciones, senal, accion)
@@ -185,6 +190,11 @@ class PilotoDirecto:
             if t - self.t_mirar0 < self.dp.t_mirar:
                 return 0.0, 0.0, self._info(pose, "mirar")
             # al frente no hay caras: barrido corto (pueden estar en una pared lateral)
+            t_barrido = self.dp.factor_timeout * (2.0 * math.radians(self.dp.barrido_deg)
+                                                  / self.dp.w_barrido + 1.0)
+            if self._barrido and t - self.t_mirar0 - self.dp.t_mirar > t_barrido:
+                self.eventos.append("barrido sin terminar: lo corto")
+                self._barrido = []
             while self._barrido:
                 err = nc.wrap(self._barrido[0] - pose[2])
                 if abs(err) > math.radians(self.dp.tol_giro_deg):
@@ -195,7 +205,15 @@ class PilotoDirecto:
             return 0.0, 0.0, self._info(pose, "llegada_b" if llego else None)
         if self.estado == GIRAR:
             err = nc.wrap(self.rumbo_obj - pose[2])
-            if abs(err) < math.radians(self.dp.tol_giro_deg):
+            if self._t_giro0 is None:
+                self._t_giro0 = t
+                self._t_giro_max = self.dp.factor_timeout * (abs(err) / self.dp.w_giro + 1.0)
+            vencido = t - self._t_giro0 > self._t_giro_max
+            if vencido:
+                # rueda trabada / el Create 3 no deja girar: que Piloto (escape) se encargue
+                self.eventos.append(f"giro sin terminar en {t - self._t_giro0:.1f} s "
+                                    f"(faltan {math.degrees(err):.0f} grados): sigo con Piloto")
+            if abs(err) < math.radians(self.dp.tol_giro_deg) or vencido:
                 self.rumbo = self.rumbo_obj
                 self.estado = RECTO
                 self.piloto.reanudar()
@@ -256,6 +274,7 @@ class PilotoDirecto:
         # rumbos cardinales en el marco de A: no acumula error de giros anteriores
         self.rumbo_obj = nc.wrap(round(nc.wrap(rumbo) / (math.pi / 2.0)) * (math.pi / 2.0))
         self.estado = GIRAR
+        self._t_giro0 = None
 
     def _adelante(self, pose):
         """Distancia hacia adelante (por el rumbo) a la flecha pendiente; None si no hay."""
@@ -318,7 +337,16 @@ class PilotoDirecto:
             else:
                 por_flecha = fwd <= self.dp.d_giro and self._lado_libre(r, a, pose, p["tipo"])
         por_frente = front <= self.dp.d_frente
-        if not (por_flecha or por_frente):
+        lateral = self._lado_libre(r, a, pose, "izq") or self._lado_libre(r, a, pose, "der")
+        lejos = (self._xy_decision is None
+                 or math.dist(pose[:2], self._xy_decision) >= self.dp.dist_cruce)
+        # Salida lateral sin flecha: se ignora (es lo rapido) mientras no haya pruebas de que el
+        # camino recto estaba mal; tras un callejon sin caras, cada salida lateral se decide
+        # con la memoria de visitas (asi vuelve por la rama que se salto).
+        por_lateral = lateral and lejos and self.callejones > 0
+        if not (por_flecha or por_frente or por_lateral):
+            if lateral and lejos:
+                self._pasar_cruce(pose)
             return None
         if por_frente and t - self.t_cara < self.dp.cara_vigencia:
             self._llegar("caras al frente")
@@ -344,7 +372,9 @@ class PilotoDirecto:
         self.eventos.extend(avisos)
         self.decisiones.append(dict(t=round(t, 2), pose=[round(v, 2) for v in pose],
                                     opciones=sorted(opciones), senal=tipo, accion=accion,
-                                    motivo="flecha" if por_flecha else "frente"))
+                                    motivo=("flecha" if por_flecha else
+                                            "frente" if por_frente else "lateral")))
+        self._xy_decision = (pose[0], pose[1])
         if p is not None:
             if p["xy"] is not None:
                 self.obedecidas.append(p["xy"])
@@ -366,6 +396,19 @@ class PilotoDirecto:
         elif accion == "der":
             self._girar_a(self.rumbo - math.pi / 2.0)
         return None
+
+    def _pasar_cruce(self, pose):
+        """Paso de largo por una salida lateral: queda en la memoria como cruce con el origen
+        y el recto visitados, y como ultimo cruce (un callejon despues agota este recto)."""
+        key = self._clave(pose)
+        if key == self._clave_pasada:
+            return
+        self._clave_pasada = key
+        vis = self.visitas.setdefault(key, {})
+        atras, recto = cardinal(self.rumbo + math.pi), cardinal(self.rumbo)
+        vis[atras] = max(vis.get(atras, 0), 1)
+        vis[recto] = vis.get(recto, 0) + 1
+        self.ultimo_cruce = (key, recto)
 
     def _clave(self, pose, radio=0.8):
         x, y = pose[0], pose[1]
