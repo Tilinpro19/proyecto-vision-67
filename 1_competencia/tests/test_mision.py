@@ -217,8 +217,9 @@ def test_config_de_competencia_es_valida():
     from navegacion import Piloto
     p = Piloto()
     cfg = os.path.join(os.path.dirname(HERE), "config.json")
-    vals = apply_params([p.nav, p.pp, ms.MisionParams()], cfg)
-    objs = (nc.NavParams(), PilotoParams(), ms.MisionParams())
+    from directo import DirectoParams
+    vals = apply_params([p.nav, p.pp, ms.MisionParams(), DirectoParams()], cfg)
+    objs = (nc.NavParams(), PilotoParams(), ms.MisionParams(), DirectoParams())
     assert all(any(hasattr(o, k) for o in objs) for k in vals)
 
 
