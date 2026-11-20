@@ -174,6 +174,7 @@ def test_zigzag_con_flechas_ignora_hueco_y_llega_a_las_caras():
     res = simular_directo(pista_zigzag(), FLECHAS_ZIGZAG + CARAS_ZIGZAG)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
     d = res["d"]
     # B esta en el callejon de las caras (x ~ 0.7, y ~ 3.0)
@@ -190,6 +191,7 @@ def test_zigzag_sin_flechas_dobla_esquinas_con_el_lidar():
     res = simular_directo(pista_zigzag(), CARAS_ZIGZAG)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
     assert [x["accion"] for x in res["d"].decisiones] == ["izq", "izq"]
     assert all(x["motivo"] == "frente" for x in res["d"].decisiones)
@@ -199,6 +201,7 @@ def test_laberinto_con_bandera_llega_cerca_de_b():
     res = simular_directo(laberinto_t_y_esquina(), LAB_FLECHAS + LAB_META)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
     assert res["b_true"][0] > 3.2           # no "llega" a 2 m de la bandera
     assert [x["accion"] for x in res["d"].decisiones] == ["izq", "der"]
@@ -210,6 +213,7 @@ def test_callejon_sin_caras_da_media_vuelta_y_sigue():
     res = simular_directo(laberinto_t_y_esquina(), objetos, t_max=240.0)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
     assert res["b_true"][0] > 3.2
     assert res["d"].callejones == 1
@@ -225,6 +229,7 @@ def test_callejon_con_caras_en_pared_lateral_las_encuentra_con_el_barrido():
     res = simular_directo(paredes, objetos)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert res["d"].motivo_llegada == "callejon con caras"
     assert res["d"].callejones == 0
     assert _en_a(res)
@@ -243,6 +248,7 @@ def test_cruce_sin_flecha_y_recto_sin_caras_vuelve_y_toma_la_lateral():
     res = simular_directo(_t_con_salida_lateral(), [("cara", (2.6, 3.0), DER_Y)], t_max=240.0)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
     assert res["d"].callejones == 1
     assert res["d"].motivo_llegada in ("caras al frente", "callejon con caras")
@@ -264,6 +270,7 @@ def test_pasillo_angosto_como_el_del_robot_real():
     res = simular_directo(pista_angosta(), [("der", (1.19, 0.0), IZQ_X), ("cara", (0.9, -2.5), IZQ_Y)])
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
     d = res["d"]
     assert abs(d.ancho - 0.56) < 0.05
@@ -285,6 +292,7 @@ def test_prohibido_al_fondo_toma_la_salida_lateral():
     res = simular_directo(paredes, objetos)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
     dec = res["d"].decisiones[0]
     assert dec["senal"] == "prohibido" and dec["accion"] == "izq"
@@ -318,6 +326,7 @@ def test_con_deriva_de_odometria_vuelve_a_a():
     res = simular_directo(pista_zigzag(), FLECHAS_ZIGZAG + CARAS_ZIGZAG, yaw_drift=0.03)
     assert res["ok"], res["d"].eventos
     assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist   # lo que el robot real cuenta como choque
     assert _en_a(res)
 
 
