@@ -40,6 +40,7 @@ class DirectoParams:
     d_giro: float = 0.72         # m    obedecer la flecha a ancho/2 + 0.03 (tope)
     d_frente: float = 0.70       # m    pared del fondo (LiDAR crudo) a ancho/2 + 0.03 -> decidir
     d_min: float = 0.30          # m    nunca decidir mas cerca que esto de la pared del fondo
+    pegarse_flecha: bool = True  # con flecha izq/der pendiente: girar recien a d_min de la pared
     ancho_inicial: float = 1.2   # m    ancho supuesto hasta medirlo
     lado_min: float = 0.55       # m    salida lateral: libre (crudo) >= max(lado_min,
     lado_extra: float = 0.35     #      ancho/2 + lado_extra) a 75, 90 y 105 grados
@@ -574,10 +575,18 @@ class PilotoDirecto:
                 return False
         return True
 
+    def _flecha_pendiente(self):
+        return (self.dp.pegarse_flecha and self.pendiente is not None
+                and self.pendiente["tipo"] in ("izq", "der"))
+
     def _d_frente(self):
+        if self._flecha_pendiente():
+            return self.dp.d_min      # con flecha: hasta la pared, no decidir al verla
         return float(np.clip(0.5 * self.ancho + 0.03, self.dp.d_min, self.dp.d_frente))
 
     def _d_giro(self):
+        if self._flecha_pendiente():
+            return self.dp.d_min
         return float(np.clip(0.5 * self.ancho + 0.03, self.dp.d_min, self.dp.d_giro))
 
     def _medir_ancho(self, pose, r, a):

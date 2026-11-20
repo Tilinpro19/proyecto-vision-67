@@ -182,6 +182,8 @@ def test_zigzag_con_flechas_ignora_hueco_y_llega_a_las_caras():
     assert [x["accion"] for x in d.decisiones] == ["izq", "izq"]
     assert all(x["motivo"] == "flecha" for x in d.decisiones)
     assert d.motivo_llegada == "caras al frente"
+    # no gira al ver la flecha: llega hasta d_min (0.30 m) de la pared donde esta (x=3.6)
+    assert d.decisiones[0]["pose"][0] > 3.6 - d.dp.d_min - 0.06
 
 
 def test_zigzag_sin_flechas_dobla_esquinas_con_el_lidar():
