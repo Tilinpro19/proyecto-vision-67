@@ -437,14 +437,19 @@ def test_regreso_trabado_en_la_zona_de_a_declara_llegada():
     piloto, mp, dp = _piloto_config()
     d = dr.PilotoDirecto(piloto, mp, dp)
     salida = lambda dist: (0.05, 0.0, dict(dist=dist, llegada=False))  # noqa: E731
-    assert not d._llegada_por_zona(0.0, salida(0.9))[2]["llegada"]
+    # B a 0.3 m de A (pista en U): la media vuelta en B no cuenta como "en la zona de A"
+    d0 = dr.PilotoDirecto(piloto, mp, dp)
+    assert not any(d0._llegada_por_zona(t, salida(0.3))[2]["llegada"] for t in range(10))
+    assert not d._llegada_por_zona(0.0, salida(1.5))[2]["llegada"]
+    assert not d._llegada_por_zona(0.5, salida(0.9))[2]["llegada"]
     assert not d._llegada_por_zona(1.0, salida(0.30))[2]["llegada"]
     assert not d._llegada_por_zona(4.0, salida(0.31))[2]["llegada"]   # 3 s sin mejorar: espera
     lin, ang, info = d._llegada_por_zona(5.5, salida(0.33))
     assert info["llegada"] and lin == 0.0 and ang == 0.0
     # lejos de A no se rinde aunque no avance
     d2 = dr.PilotoDirecto(piloto, mp, dp)
-    d2._llegada_por_zona(0.0, salida(0.8))
+    d2._llegada_por_zona(0.0, salida(1.5))
+    d2._llegada_por_zona(0.5, salida(0.8))
     assert not d2._llegada_por_zona(20.0, salida(0.8))[2]["llegada"]
 
 

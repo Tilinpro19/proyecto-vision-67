@@ -101,6 +101,7 @@ class DirectoParams:
     # (con el LiDAR atrasado Piloto quedaba 2 min escapando a 0.27 m de A sin declarar llegada)
     a_suficiente: float = 0.40   # m
     t_sin_mejora: float = 4.0    # s
+    a_armar: float = 1.0         # m    solo despues de haber estado a mas de esto de A
 
 
 def cardinal(rad):
@@ -193,6 +194,7 @@ class PilotoDirecto:
         self._rumbo_pend = None        # t del fin del ultimo giro: corregir el rumbo con las paredes
         self._rumbo_lect = []
         self._a_mejor = (math.inf, None)   # (dist minima a A en el regreso, t)
+        self._a_lejos = False              # el regreso ya estuvo a mas de a_armar de A
         self._clave_pasada = None      # ultimo cruce pasado de largo
         self.ancho = self.dp.ancho_inicial
         self._ancho_n = 0
@@ -469,6 +471,10 @@ class PilotoDirecto:
         lin, ang, info = out
         dist = info.get("dist", math.inf)
         if info.get("llegada"):
+            return out
+        if dist > self.dp.a_armar:
+            self._a_lejos = True      # si B esta a < a_suficiente de A (pista en U) no salta en B
+        if not self._a_lejos:
             return out
         if dist < self._a_mejor[0] - 0.02:
             self._a_mejor = (dist, t)
