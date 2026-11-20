@@ -569,9 +569,14 @@ class PilotoDirecto:
         (respecto del rumbo del pasillo). Con solo 90 se giraria al asomar el borde del hueco."""
         signo = 1.0 if lado == "izq" else -1.0
         umbral = max(self.dp.lado_min, 0.5 * self.ancho + self.dp.lado_extra)
+        front = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(4.0))
         for g in (75.0, 90.0, 105.0):
             d = rango_en(r, a, nc.wrap(self.rumbo + signo * math.radians(g) - pose[2]), math.radians(4.0))
             if d is not None and d < umbral:
+                # pegado al fondo el rayo de 75 grados pega en la pared del FRENTE (a 0.25 m:
+                # 0.25/cos 75 = 0.97 m), no en una pared lateral: eso no tapa la salida
+                if front is not None and d * math.cos(math.radians(g)) >= front - 0.05:
+                    continue
                 return False
         return True
 

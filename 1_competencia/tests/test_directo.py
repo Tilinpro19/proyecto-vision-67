@@ -378,3 +378,12 @@ def test_giro_trabado_no_bloquea_la_mision():
 
 def nc_wrap(x):
     return (x + math.pi) % (2 * math.pi) - math.pi
+
+
+def test_se_pasa_del_punto_de_giro_y_igual_ve_la_salida():
+    """Si el robot real se pasa (0.22 m de la pared de la flecha), el rayo de 75 grados pega
+    en la pared del frente: antes lo tomaba como costado tapado -> callejon y 7 decisiones."""
+    res = simular_directo(pista_zigzag(), FLECHAS_ZIGZAG + CARAS_ZIGZAG,
+                          dp_extra=dict(d_min=0.22, d_parada=0.17))
+    assert res["ok"] and res["collisions"] == 0
+    assert [x["accion"] for x in res["d"].decisiones] == ["izq", "izq"]
