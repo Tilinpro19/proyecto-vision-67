@@ -91,6 +91,11 @@ class DirectoParams:
     bandera_frames: int = 2
     d_bandera: float = 1.0       # m    la bandera confirma la llegada solo a menos de esto
     d_prohibido: float = 3.0     # m    prohibido pendiente a menos de esto: tomar la salida lateral
+    # Tras cada giro: rumbo de la odometria corregido UNA vez con las dos paredes del pasillo
+    # (en 0.57 m, 10-15 grados de deriva tras la media vuelta dejan al robot contra una pared)
+    rumbo_paredes: bool = True
+    paredes_max_deg: float = 25.0  # correccion mayor que esto = no son las paredes del pasillo
+    paredes_paralelas_deg: float = 3.0
 
 
 def cardinal(rad):
@@ -116,6 +121,28 @@ def pared_en(ranges, angles, bearing, ventana, dispersion=0.08):
         return None
     p10, p50, p90 = np.percentile(ranges[m], [10, 50, 90])
     return float(p50) if p90 - p10 < dispersion else None
+
+
+def angulo_pasillo(ranges, angles, alcance=(-0.35, 0.6), lateral=(0.12, 0.9), resid=0.015,
+                   extension=0.3, n_min=10):
+    """Angulo de las paredes izquierda y derecha en el marco del robot, cada una ajustada con
+    una recta a los puntos a +-lateral del robot. (ang_izq, d_izq, ang_der, d_der) o None si a
+    algun lado no hay una pared recta (hueco, esquina, caja)."""
+    if len(ranges) == 0:
+        return None
+    ok = np.isfinite(ranges)
+    x, y = ranges[ok] * np.cos(angles[ok]), ranges[ok] * np.sin(angles[ok])
+    out = []
+    for signo in (1.0, -1.0):
+        m = (x > alcance[0]) & (x < alcance[1]) & (signo * y > lateral[0]) & (signo * y < lateral[1])
+        if np.count_nonzero(m) < n_min or np.ptp(x[m]) < extension:
+            return None
+        k, b = np.polyfit(x[m], y[m], 1)
+        if np.std(y[m] - (k * x[m] + b)) > resid:
+            return None
+        ang = math.atan(k)
+        out += [ang, abs(b) * math.cos(ang)]
+    return tuple(out)
 
 
 def rumbo_en_imagen(cx, ancho, fov_deg):
@@ -158,6 +185,7 @@ class PilotoDirecto:
         self.media_vuelta = False
         self.modo_regreso = None      # "tramos" | "migas"
         self._vuelta = None
+        self._rumbo_pend = False       # corregir el rumbo con las paredes tras el giro
         self._clave_pasada = None      # ultimo cruce pasado de largo
         self.ancho = self.dp.ancho_inicial
         self._ancho_n = 0
@@ -270,6 +298,7 @@ class PilotoDirecto:
                 self.ruta.append(dict(xy=(x0, y0), de=de, a=self.rumbo_obj))
                 self.rumbo = self.rumbo_obj
                 self.estado = RECTO
+                self._rumbo_pend = True
                 self.piloto.reanudar()
                 self._lin_prev, self._t_prev = 0.0, None
             else:
@@ -280,6 +309,7 @@ class PilotoDirecto:
 
         # RECTO
         r, a = nc.clean_scan(ranges, angles, self.piloto.nav.scan_min)
+        pose = self._corregir_rumbo(odom_pose, pose, r, a)
         nav = self.piloto.nav
         front = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(8.0))
         front = nav.max_range if front is None else front
@@ -443,6 +473,7 @@ class PilotoDirecto:
             if abs(err) < math.radians(dp.tol_giro_deg):
                 self.rumbo = v["obj"]
                 v["estado"] = "recto"
+                self._rumbo_pend = True
                 self._lin_prev, self._t_prev, self._t_bloq0 = 0.0, None, None
             else:
                 w = float(np.clip(dp.k_giro * err, -dp.w_giro, dp.w_giro))
@@ -450,6 +481,8 @@ class PilotoDirecto:
                     w = math.copysign(dp.w_giro_min, err)
                 return 0.0, w, info
         # recto hacia el proximo giro (o hacia A)
+        pose = self._corregir_rumbo(odom_pose, pose, r, a)
+        info["pose"] = pose
         c, s_ = math.cos(self.rumbo), math.sin(self.rumbo)
         front = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(8.0))
         front = self.piloto.nav.max_range if front is None else front
@@ -508,6 +541,31 @@ class PilotoDirecto:
         return lin, ang, info
 
     # --- internos -------------------------------------------------------------
+    def _corregir_rumbo(self, odom_pose, pose, r, a):
+        """Primera vez tras un giro que las dos paredes del pasillo se ven rectas, paralelas y
+        al ancho medido: el rumbo real es el del pasillo menos el angulo de las paredes. Se
+        corrige la pose de Piloto en el punto actual (x, y no cambian). Devuelve la pose."""
+        dp = self.dp
+        if not (self._rumbo_pend and dp.rumbo_paredes):
+            return pose
+        ap = angulo_pasillo(r, a)
+        if ap is None:
+            return pose
+        ang_i, d_i, ang_d, d_d = ap
+        if abs(ang_i - ang_d) > math.radians(dp.paredes_paralelas_deg):
+            return pose
+        if self._ancho_n and abs(d_i + d_d - self.ancho) > 0.08:
+            return pose
+        delta = nc.wrap(self.rumbo - 0.5 * (ang_i + ang_d) - pose[2])
+        self._rumbo_pend = False
+        if abs(delta) > math.radians(dp.paredes_max_deg):
+            return pose
+        nueva = (pose[0], pose[1], nc.wrap(pose[2] + delta))
+        self.piloto.corr = nc.compose(nueva, nc.inverse(nc.relative(self.piloto.origin, odom_pose)))
+        if abs(delta) > math.radians(2.0):
+            self.eventos.append(f"rumbo corregido con las paredes: {math.degrees(delta):+.0f} grados")
+        return nueva
+
     def _info(self, pose, accion):
         return dict(pose=pose, accion=accion, estado_directo=self.estado, llegada=False)
 

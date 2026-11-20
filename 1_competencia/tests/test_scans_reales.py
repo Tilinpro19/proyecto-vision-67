@@ -117,3 +117,18 @@ def test_borde_de_salida_no_desvia_el_centrado():
     d.rumbo = p[2]          # alineado: solo cuenta el centrado
     _, ang, _ = d._seguir_pasillo(0.0, p, r, a, 0.81, d.dp.v_recto)
     assert abs(ang) < 0.3
+
+
+def test_angulo_pasillo_en_escaneos_reales():
+    """Pasillo real con el robot torcido ~3.5 grados: lo mide. Borde de una salida (pared +
+    hueco) y casi choques en esquinas: no da angulo (no se corrige el rumbo con eso)."""
+    _, rr, aa = cargar("r124100_pasillo.npz")
+    d = directo((0.0, 0.0, 0.0))
+    ap = dr.angulo_pasillo(*limpio(d, rr, aa))
+    assert ap is not None
+    assert abs(math.degrees(ap[0] - ap[2])) < 3.0
+    assert -5.0 < math.degrees(0.5 * (ap[0] + ap[2])) < -2.0
+    assert 0.65 < ap[1] + ap[3] < 0.85
+    for n in ["r144106_borde_salida.npz"] + CHOQUES:
+        _, rr, aa = cargar(n)
+        assert dr.angulo_pasillo(*limpio(d, rr, aa)) is None, n

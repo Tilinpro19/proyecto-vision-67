@@ -4,6 +4,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -405,3 +406,26 @@ def test_flecha_pegada_con_deriva_de_la_odometria():
     res = simular_directo(pista_zigzag(), FLECHAS_ZIGZAG + CARAS_ZIGZAG, yaw_drift=0.06)
     assert res["ok"] and res["collisions"] == 0
     assert [x["accion"] for x in res["d"].decisiones] == ["izq", "izq"]
+
+
+@pytest.mark.parametrize("deriva", [-0.06, 0.06])
+def test_pasillo_angosto_con_deriva_fuerte_corrige_el_rumbo_con_las_paredes(deriva):
+    """6 % de deriva: tras la media vuelta en B la odometria queda ~16 grados torcida; sin
+    corregir, el centrado deja al robot a ~18 cm del eje y en 0.57 m la pared entra en la
+    franja de paso (bloqueado). Con las paredes se corrige una vez tras cada giro."""
+    res = simular_directo(pista_angosta(), [("der", (1.19, 0.0), IZQ_X), ("cara", (0.9, -2.5), IZQ_Y)],
+                          yaw_drift=deriva)
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist
+    assert _en_a(res)
+    assert any("rumbo corregido" in e for e in res["d"].eventos)
+
+
+@pytest.mark.parametrize("deriva", [-0.04, 0.04])
+def test_pasillo_ancho_con_deriva_corrige_tambien_en_la_ida(deriva):
+    """Pasillo de 1.2 m: si solo se corrigiera en el regreso, el error de posicion de la ida
+    queda y el robot para a 0.5 m de A (antes la deriva de ida y vuelta se cancelaba)."""
+    res = simular_directo(pista_zigzag(), CARAS_ZIGZAG, yaw_drift=deriva)
+    assert res["ok"], res["d"].eventos
+    assert _en_a(res)
