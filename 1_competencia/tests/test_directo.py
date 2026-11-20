@@ -387,3 +387,12 @@ def test_se_pasa_del_punto_de_giro_y_igual_ve_la_salida():
                           dp_extra=dict(d_min=0.22, d_parada=0.17))
     assert res["ok"] and res["collisions"] == 0
     assert [x["accion"] for x in res["d"].decisiones] == ["izq", "izq"]
+
+
+def test_flecha_pegada_con_deriva_de_la_odometria():
+    """Con 6 % de deriva al girar el robot llega ~5 grados torcido a la pared de la segunda
+    flecha; pegado a 0.30 m el rayo de 75 grados pegaba en esa pared (callejon falso, se
+    perdia 200 s). Al fondo solo cuentan 90 y 105 grados."""
+    res = simular_directo(pista_zigzag(), FLECHAS_ZIGZAG + CARAS_ZIGZAG, yaw_drift=0.06)
+    assert res["ok"] and res["collisions"] == 0
+    assert [x["accion"] for x in res["d"].decisiones] == ["izq", "izq"]

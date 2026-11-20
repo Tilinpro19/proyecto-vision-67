@@ -41,6 +41,7 @@ class DirectoParams:
     d_frente: float = 0.70       # m    pared del fondo (LiDAR crudo) a ancho/2 + 0.03 -> decidir
     d_min: float = 0.30          # m    nunca decidir mas cerca que esto de la pared del fondo
     pegarse_flecha: bool = True  # con flecha izq/der pendiente: girar recien a d_min de la pared
+    fondo_75: float = 0.45      # m    frente por debajo de esto: _lado_libre ignora el rayo de 75
     ancho_inicial: float = 1.2   # m    ancho supuesto hasta medirlo
     lado_min: float = 0.55       # m    salida lateral: libre (crudo) >= max(lado_min,
     lado_extra: float = 0.35     #      ancho/2 + lado_extra) a 75, 90 y 105 grados
@@ -570,13 +571,15 @@ class PilotoDirecto:
         signo = 1.0 if lado == "izq" else -1.0
         umbral = max(self.dp.lado_min, 0.5 * self.ancho + self.dp.lado_extra)
         front = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(4.0))
-        for g in (75.0, 90.0, 105.0):
+        # Pegado a la pared del fondo el rayo de 75 grados pega en ESA pared (a 0.30 m y 5
+        # grados torcido por la deriva: 0.30/cos 70 = 0.88 m < umbral), no en una lateral; ahi
+        # la salida, si existe, esta al costado: bastan 90 y 105.
+        al_fondo = front is not None and front <= self.dp.fondo_75
+        for g in ((90.0, 105.0) if al_fondo else (75.0, 90.0, 105.0)):
             d = rango_en(r, a, nc.wrap(self.rumbo + signo * math.radians(g) - pose[2]), math.radians(4.0))
             if d is not None and d < umbral:
-                # pegado al fondo el rayo de 75 grados pega en la pared del FRENTE (a 0.25 m:
-                # 0.25/cos 75 = 0.97 m), no en una pared lateral: eso no tapa la salida
-                if front is not None and d * math.cos(math.radians(g)) >= front - 0.05:
-                    continue
+                if front is not None and d * math.cos(math.radians(g)) >= front - 0.10:
+                    continue      # el impacto esta a la altura del frente: es la pared del fondo
                 return False
         return True
 
