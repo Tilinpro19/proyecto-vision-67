@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -132,3 +133,30 @@ def test_directo_params_en_config_json_existen():
     objs = [piloto.nav, piloto.pp, mp, dp]
     assert all(any(hasattr(o, k) for o in objs) for k in claves)
     assert isinstance(dp, dr.DirectoParams)
+
+
+def test_guarda_diagnostico_con_foto_en_cada_decision(monkeypatch, tmp_path):
+    reloj = Reloj()
+    monkeypatch.setattr(ms.time, "monotonic", reloj)
+    monkeypatch.setattr(sf, "buscar_candidatos", lambda img: True)
+    monkeypatch.setattr(sf, "detectar", lambda img, **kw: img.senales)
+    piloto, mp, dp = _piloto_config()
+    mp.t_max = 200.0
+    s = SistemaSim(pista_zigzag(), FLECHAS_ZIGZAG + CARAS_ZIGZAG, mp, reloj)
+    m = ms.Mision("A", log_dir=str(tmp_path), quiet=True, clock=reloj)
+    ms.tarea_a_directa(SimpleNamespace(ver=False), s, m, piloto, dp)
+    nombres = sorted(p.name for p in tmp_path.glob("*.npz"))
+    assert [n.split("_", 5)[-1] for n in nombres] == [
+        "decision_izq.npz", "decision_izq.npz", "llegada.npz"], nombres
+    z = np.load(tmp_path / nombres[0])
+    assert '"accion": "izq"' in str(z["nota"]) and len(z["ranges"]) > 100
+
+
+def test_diagnostico_guarda_la_foto_como_jpeg(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    m = ms.Mision("A", log_dir=str(tmp_path), quiet=True)
+    img = np.zeros((40, 60, 3), np.uint8)
+    img[:, 30:] = 255
+    ruta = m.guardar_diagnostico("decision_der", (0, 0, 0), [1.0], [0.0], imagen=img, nota="x")
+    foto = cv2.imdecode(np.load(ruta)["jpg"], cv2.IMREAD_COLOR)
+    assert foto.shape == img.shape and foto[0, 50].mean() > 200

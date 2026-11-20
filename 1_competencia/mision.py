@@ -158,8 +158,10 @@ class Mision:
         self.choques += 1
         self.evento(f"CHOQUE #{self.choques} ({origen})")
 
-    def guardar_diagnostico(self, motivo, pose, ranges, angles, crumbs=None, guardian=None):
-        """Guarda scan, pose y migas en un .npz dentro de log_dir para depurar atascos/choques."""
+    def guardar_diagnostico(self, motivo, pose, ranges, angles, crumbs=None, guardian=None,
+                            imagen=None, nota=None):
+        """Guarda scan, pose y migas en un .npz dentro de log_dir para depurar atascos/choques.
+        imagen: ultimo cuadro de la camara (se guarda como JPEG en 'jpg'); nota: texto libre."""
         if not self.log_dir:
             return None
         self._diag_seq += 1
@@ -172,6 +174,16 @@ class Mision:
             extra = dict(virt_r=np.asarray(guardian.virtual[0], dtype=np.float32),
                          virt_a=np.asarray(guardian.virtual[1], dtype=np.float32),
                          depth4=guardian.ultimo_cuadro)
+        if imagen is not None:
+            try:
+                import cv2
+                ok, buf = cv2.imencode(".jpg", imagen, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok:
+                    extra["jpg"] = buf.reshape(-1)
+            except Exception:   # sin cv2 o imagen rara: el diagnostico sale igual sin foto
+                pass
+        if nota:
+            extra["nota"] = np.array(str(nota))
         np.savez_compressed(
             ruta,
             **extra,
@@ -1089,6 +1101,7 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
         time.sleep(mp.cuenta)
     m.ir(SEGUIR, f"modo directo (v_recto {dp.v_recto:.2f} m/s)")
     escaneo, t_cam, frente = None, -1e9, math.inf
+    ultimo_img, n_dec = None, 0     # foto de cada decision para depurar (npz en logs/)
 
     while m.activa():
         s.spin(1.0 / mp.rate)
@@ -1099,6 +1112,8 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
         _volcar_directo(d, m)
 
         img = s.frame_nuevo() if m.estado in (SEGUIR, ESCANEAR) or args.ver else None
+        if img is not None:
+            ultimo_img = img
 
         if m.estado == SEGUIR:
             t_p = m.perfil.reloj()
@@ -1112,6 +1127,12 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
                 if d.estado == dr.MIRAR or frente < dp.d_lento:
                     d.ver_caras(t, s.vista_cara(img))
             lin, ang, info = d.paso(t, s.odom.pose, r, a, bumper_hit=s.bump())
+            if len(d.decisiones) > n_dec or info["accion"] == "llegada_b":
+                n_dec = len(d.decisiones)
+                dec = d.decisiones[-1] if d.decisiones else {}
+                motivo = "llegada" if info["accion"] == "llegada_b" else f"decision_{dec.get('accion')}"
+                m.guardar_diagnostico(motivo, info["pose"], r, a, imagen=ultimo_img,
+                                      nota=json.dumps(dec, default=str))
             if "front" in info:   # libre inflado de Piloto -> distancia aproximada a la pared
                 frente = info.get("frente_crudo", info["front"] + piloto.nav.inflate)
             m.perfil.registrar(t_p)
