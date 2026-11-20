@@ -105,6 +105,18 @@ def rango_en(ranges, angles, bearing, ventana):
     return float(np.median(ranges[m])) if np.any(m) else None
 
 
+def pared_en(ranges, angles, bearing, ventana, dispersion=0.08):
+    """Distancia a una pared en `bearing` +- ventana: la mediana, solo si los rayos de la
+    ventana son parejos (p90 - p10 < dispersion). None en un hueco, su borde o sin datos."""
+    if len(ranges) == 0:
+        return None
+    m = (np.abs(nc.wrap(angles - bearing)) < ventana) & np.isfinite(ranges)
+    if np.count_nonzero(m) < 3:
+        return None
+    p10, p50, p90 = np.percentile(ranges[m], [10, 50, 90])
+    return float(p50) if p90 - p10 < dispersion else None
+
+
 def rumbo_en_imagen(cx, ancho, fov_deg):
     """Rumbo (rad, + = izquierda) de la columna cx en una imagen de `ancho` px (pinhole)."""
     f = (ancho / 2.0) / math.tan(math.radians(fov_deg) / 2.0)
@@ -328,8 +340,10 @@ class PilotoDirecto:
         dt = 0.1 if self._t_prev is None else min(max(t - self._t_prev, 0.0), 0.5)
         self._t_prev = t
         err = nc.wrap(self.rumbo - pose[2])
-        izq = rango_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(10.0))
-        der = rango_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(10.0))
+        # pared_en: en el borde de una salida la mediana mezcla pared y hueco y el centrado
+        # tiraria al robot hacia el hueco
+        izq = pared_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(10.0))
+        der = pared_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(10.0))
         corr = 0.0
         if izq is not None and der is not None and max(izq, der) < dp.ancho_inicial:
             corr = float(np.clip(dp.k_centro * (izq - der) / 2.0, -dp.centro_max, dp.centro_max))
@@ -568,10 +582,12 @@ class PilotoDirecto:
 
     def _medir_ancho(self, pose, r, a):
         """Ancho del pasillo: paredes a +-90 grados del rumbo (solo si se ven las dos)."""
-        izq = rango_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(5.0))
-        der = rango_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(5.0))
+        izq = pared_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(5.0))
+        der = pared_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(5.0))
         if izq is None or der is None or max(izq, der) > self.dp.ancho_inicial:
-            return      # un lado abierto (cruce, sala): no es el ancho del pasillo
+            # un lado abierto (cruce, sala) o la ventana cae en el borde de un hueco (la
+            # mediana mezcla pared y hueco: 0.28 + 1.04 en el intento real): no es el ancho
+            return
         w = izq + der
         if self._ancho_n < 5 or abs(w - self.ancho) < 0.25:
             # las primeras lecturas fijan el ancho; despues solo cambios graduales (al asomar
