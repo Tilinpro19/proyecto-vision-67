@@ -55,18 +55,21 @@ def scan_from(segments, pose):
 
 class Sim:
     """walls: los ve el LiDAR. low: segmentos que chocan pero el LiDAR no ve.
-    yaw_drift: error relativo de la odometria al girar (deriva)."""
+    yaw_drift: error relativo de la odometria al girar (deriva).
+    scan_retardo: pasos (dt) de atraso del LiDAR (en la Pi el ciclo llega a 0.3 s)."""
 
-    def __init__(self, walls, low=(), radius=0.17, yaw_drift=0.0, start=(0.0, 0.0, 0.0)):
+    def __init__(self, walls, low=(), radius=0.17, yaw_drift=0.0, start=(0.0, 0.0, 0.0),
+                 scan_retardo=0):
         self.walls, self.low, self.radius = list(walls), list(low), radius
         self.true = start
         self.odom = (5.0, -2.0, 0.7)  # el /odom no arranca en A
         self.yaw_drift = yaw_drift
         self.collisions = 0
         self.min_clear = math.inf
+        self._hist = [start] * (scan_retardo + 1)
 
     def scan(self):
-        return scan_from(self.walls, self.true)
+        return scan_from(self.walls, self._hist[0])
 
     def clearance(self, xy, segs):
         return min((seg_dist(np.asarray(xy), s) for s in segs), default=math.inf)
@@ -81,6 +84,7 @@ class Sim:
             lin = 0.0
             nx, ny = x, y
         self.true = (nx, ny, float(nc.wrap(th + ang * dt)))
+        self._hist = self._hist[1:] + [self.true]
         self.min_clear = min(self.min_clear, self.clearance((nx, ny), self.walls))
         # odometria: integra con un error de escala en el giro
         self.odom = nc.compose(self.odom, (lin * dt, 0.0, ang * dt * (1 + self.yaw_drift)))

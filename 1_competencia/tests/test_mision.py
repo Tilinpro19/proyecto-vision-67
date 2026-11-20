@@ -237,3 +237,33 @@ def test_calibrar_costo_y_resumen():
              dict(config="y", ok=False, costo=300.0, choques=0)]
     r = cb.resumen(filas)
     assert [f["config"] for f in r] == ["x", "y"] and r[1]["exitos"] == 1
+
+
+def _res(ranking):
+    import facial
+    nombre, score = ranking[0]
+    return facial.Resultado(nombre=nombre, score=score, ranking=ranking, n_caras=4,
+                            seguro=score >= facial.UMBRAL and score - ranking[1][1] >= facial.MARGEN)
+
+
+def test_escaneo_termina_antes_si_la_identificacion_ya_es_clara():
+    """En la Pi la camara da ~1.4 frames/s con cara: 12 frames son ~8 s parado en B."""
+    mp = ms.MisionParams()
+    llamadas = []
+    fn = lambda fr: llamadas.append(len(fr)) or _res([("Angel_Mora", 0.62), ("Thiago_Frias", 0.30)])  # noqa: E731
+    e = ms.Escaneo(FakeRostros(), mp, t0=0.0, identificar_fn=fn)
+    cara = np.ones((4, 4, 3))
+    outs = [e.paso(0.1 * k, cara) for k in range(1, 5)]
+    assert [o[1] is not None for o in outs] == [False, False, False, True]
+    assert len(outs[-1][1]) == mp.escaneo_frames_min and llamadas == [4]
+
+
+def test_escaneo_dudoso_espera_todos_los_frames():
+    mp = ms.MisionParams()
+    llamadas = []
+    fn = lambda fr: llamadas.append(len(fr)) or _res([("Angel_Mora", 0.45), ("Thiago_Frias", 0.40)])  # noqa: E731
+    e = ms.Escaneo(FakeRostros(), mp, t0=0.0, identificar_fn=fn)
+    cara = np.ones((4, 4, 3))
+    outs = [e.paso(0.1 * k, cara) for k in range(1, mp.escaneo_frames + 1)]
+    assert all(o[1] is None for o in outs[:-1]) and len(outs[-1][1]) == mp.escaneo_frames
+    assert llamadas == [4, 7, 10]

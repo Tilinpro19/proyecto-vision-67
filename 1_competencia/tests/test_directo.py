@@ -54,8 +54,8 @@ def _piloto_config():
     return piloto, mp, dp
 
 
-def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_extra=None):
-    sim = Sim(paredes, yaw_drift=yaw_drift)
+def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_extra=None, scan_retardo=0):
+    sim = Sim(paredes, yaw_drift=yaw_drift, scan_retardo=scan_retardo)
     piloto, mp, dp = _piloto_config()
     for k, v in (dp_extra or {}).items():
         setattr(dp, k, v)
@@ -429,3 +429,32 @@ def test_pasillo_ancho_con_deriva_corrige_tambien_en_la_ida(deriva):
     res = simular_directo(pista_zigzag(), CARAS_ZIGZAG, yaw_drift=deriva)
     assert res["ok"], res["d"].eventos
     assert _en_a(res)
+
+
+def test_regreso_trabado_en_la_zona_de_a_declara_llegada():
+    """Con el LiDAR 0.3 s atrasado el regreso por migas quedaba 2 min escapando a 0.27 m de A
+    (atasco repetido) sin declarar llegada: intento perdido."""
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    salida = lambda dist: (0.05, 0.0, dict(dist=dist, llegada=False))  # noqa: E731
+    assert not d._llegada_por_zona(0.0, salida(0.9))[2]["llegada"]
+    assert not d._llegada_por_zona(1.0, salida(0.30))[2]["llegada"]
+    assert not d._llegada_por_zona(4.0, salida(0.31))[2]["llegada"]   # 3 s sin mejorar: espera
+    lin, ang, info = d._llegada_por_zona(5.5, salida(0.33))
+    assert info["llegada"] and lin == 0.0 and ang == 0.0
+    # lejos de A no se rinde aunque no avance
+    d2 = dr.PilotoDirecto(piloto, mp, dp)
+    d2._llegada_por_zona(0.0, salida(0.8))
+    assert not d2._llegada_por_zona(20.0, salida(0.8))[2]["llegada"]
+
+
+@pytest.mark.parametrize("v", [0.20, 0.26, 0.30])
+def test_lidar_atrasado_03s_sin_choques_y_vuelve_a_a(v):
+    """En la Pi el ciclo de control llega a 0.3 s (perfil p95 de los intentos reales)."""
+    objetos = [("cara", (2.6, 3.0), DER_Y)]
+    res = simular_directo(_t_con_salida_lateral(), objetos, t_max=240.0, yaw_drift=-0.04,
+                          scan_retardo=3, dp_extra=dict(v_recto=v, v_regreso=v))
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist
+    assert math.hypot(*res["true"][:2]) < 0.45

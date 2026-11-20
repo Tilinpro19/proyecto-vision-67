@@ -97,6 +97,10 @@ class DirectoParams:
     paredes_max_deg: float = 25.0  # correccion mayor que esto = no son las paredes del pasillo
     paredes_paralelas_deg: float = 3.0
     rumbo_espera: float = 0.4    # s    tras el giro, antes de medir las paredes
+    # A es una zona: a menos de a_suficiente sin acercarse mas durante t_sin_mejora -> llegada
+    # (con el LiDAR atrasado Piloto quedaba 2 min escapando a 0.27 m de A sin declarar llegada)
+    a_suficiente: float = 0.40   # m
+    t_sin_mejora: float = 4.0    # s
 
 
 def cardinal(rad):
@@ -188,6 +192,7 @@ class PilotoDirecto:
         self._vuelta = None
         self._rumbo_pend = None        # t del fin del ultimo giro: corregir el rumbo con las paredes
         self._rumbo_lect = []
+        self._a_mejor = (math.inf, None)   # (dist minima a A en el regreso, t)
         self._clave_pasada = None      # ultimo cruce pasado de largo
         self.ancho = self.dp.ancho_inicial
         self._ancho_n = 0
@@ -449,14 +454,31 @@ class PilotoDirecto:
                          for g in reversed(self.ruta)]
                 self._vuelta = dict(pasos=pasos, estado="girar",
                                     obj=self._cardinal_rad(self.rumbo + math.pi))
+        out = None
         if self.modo_regreso == "tramos":
             out = self._regreso_tramos(t, odom_pose, ranges, angles, bumper_hit)
-            if out is not None:
-                return out
-            self.modo_regreso = "migas"
-            self.eventos.append("regreso por tramos bloqueado: sigo por migas")
-            self.piloto.volver()
-        return self._regreso_migas(t, odom_pose, ranges, angles, bumper_hit)
+            if out is None:
+                self.modo_regreso = "migas"
+                self.eventos.append("regreso por tramos bloqueado: sigo por migas")
+                self.piloto.volver()
+        if out is None:
+            out = self._regreso_migas(t, odom_pose, ranges, angles, bumper_hit)
+        return self._llegada_por_zona(t, out)
+
+    def _llegada_por_zona(self, t, out):
+        lin, ang, info = out
+        dist = info.get("dist", math.inf)
+        if info.get("llegada"):
+            return out
+        if dist < self._a_mejor[0] - 0.02:
+            self._a_mejor = (dist, t)
+        elif (self._a_mejor[0] < self.dp.a_suficiente
+              and t - self._a_mejor[1] > self.dp.t_sin_mejora):
+            self.eventos.append(f"en la zona de A ({self._a_mejor[0]:.2f} m) y sin acercarme "
+                                f"en {self.dp.t_sin_mejora:.0f} s: llegada")
+            info = dict(info, llegada=True)
+            return 0.0, 0.0, info
+        return out
 
     @staticmethod
     def _cardinal_rad(rumbo):

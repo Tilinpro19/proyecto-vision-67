@@ -47,6 +47,8 @@ class MisionParams:
     foto_ancho: float = 0.10      # cara >= esta fraccion del ancho de imagen = "llegue (foto)"
     foto_frente: float = 0.70     # m   ...y con menos que esto libre al frente
     escaneo_frames: int = 12      # frames con cara para decidir el nombre
+    escaneo_frames_min: int = 4   # desde aqui, si la identificacion ya es clara, no espera mas
+    escaneo_margen_rapido: float = 0.10  # ...clara = seguro y con esta ventaja sobre el segundo
     escaneo_max: float = 15.0     # s   maximo escaneando/buscando la cara en B
     busqueda_angular: float = 0.4 # rad/s girando para buscar la foto
     home_tol_b: float = 0.35      # m   Tarea B: anuncio automatico cerca de A
@@ -242,18 +244,32 @@ class Escaneo:
     """ESCANEAR sin bloquear: junta frames con cara; si no ve ninguna, barre girando.
     paso(t, img_nueva) -> (angular, frames listos o None)."""
 
-    def __init__(self, rostros, mp, t0, buscar=True, limite=None):
+    def __init__(self, rostros, mp, t0, buscar=True, limite=None, identificar_fn=None):
         self.rostros, self.mp, self.t0, self.buscar = rostros, mp, t0, buscar
         self.limite = limite or mp.escaneo_max
         self.frames, self.visto = [], False
+        self._identificar_fn = identificar_fn   # frames -> facial.Resultado (salida temprana)
+
+    def _claro(self):
+        """Con escaneo_frames_min frames ya hay un nombre seguro con ventaja amplia: identificar
+        promedia los 3 mejores frames, esperar a 12 (~8 s en la Pi) no cambia el resultado."""
+        n0 = max(1, self.mp.escaneo_frames_min)
+        # identificar re-detecta todos los frames (~0.1 s c/u en la Pi): probar en n0, n0+3, ...
+        if self._identificar_fn is None or len(self.frames) < n0 or (len(self.frames) - n0) % 3:
+            return False
+        res = self._identificar_fn(self.frames)
+        segundo = res.ranking[1][1] if len(res.ranking) > 1 else -1.0
+        return bool(res.seguro and res.score - segundo >= self.mp.escaneo_margen_rapido)
 
     def paso(self, t, img):
+        nuevo = False
         if img is not None:
             _, faces = self.rostros.detectar(img)
             if len(faces):
                 self.frames.append(img)
-                self.visto = True
-        listo = len(self.frames) >= self.mp.escaneo_frames or t - self.t0 > self.limite
+                self.visto = nuevo = True
+        listo = (len(self.frames) >= self.mp.escaneo_frames or t - self.t0 > self.limite
+                 or (nuevo and self._claro()))
         if listo:
             return 0.0, self.frames
         if self.visto or not self.buscar or t - self.t0 < 1.5:
@@ -650,7 +666,12 @@ def _crear_escaneo(s, mp, t):
             mp.persona, s.rostros, s.galeria, mp, t,
             yaw0=s.odom.pose[2], umbral=s.umbral,
         )
-    return Escaneo(s.rostros, mp, t)
+    fn = None
+    if getattr(s, "galeria", None) is not None:
+        import facial
+        umbral = getattr(s, "umbral", None) or facial.UMBRAL
+        fn = lambda fr: facial.identificar(fr, s.rostros, s.galeria, umbral)  # noqa: E731
+    return Escaneo(s.rostros, mp, t, identificar_fn=fn)
 
 
 def _procesar_escaneo(escaneo, s, m, t, img):
