@@ -46,7 +46,7 @@ def test_esquina_gira_hacia_el_lado_abierto():
 
 
 def test_callejon_sin_salida_no_sigue_de_frente():
-    r, a = raycast(corridor(0.35, -0.35, length=0.7) + [((0.7, -0.35), (0.7, 0.35))])
+    r, a = raycast(corridor(0.35, -0.35, length=0.65) + [((0.65, -0.35), (0.65, 0.35))])
     h = nc.choose_heading(r, a, goal=0.0)
     assert h is None or abs(h) > math.radians(90)
     assert abs(nc.most_open(r, a)) > math.radians(150)   # la salida esta atras
