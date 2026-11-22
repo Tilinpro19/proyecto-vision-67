@@ -212,11 +212,12 @@ def test_apply_params_json_y_overrides(tmp_path):
     assert pp.max_linear == pytest.approx(0.3) and mp.t_max == 120.0 and mp.llegada == "foto"
 
 
-def test_config_de_competencia_es_valida():
+@pytest.mark.parametrize("nombre", ["config.json", "config_rapido.json", "config_agresivo.json"])
+def test_config_de_competencia_es_valida(nombre):
     import nav_core as nc
     from navegacion import Piloto
     p = Piloto()
-    cfg = os.path.join(os.path.dirname(HERE), "config.json")
+    cfg = os.path.join(os.path.dirname(HERE), nombre)
     from directo import DirectoParams
     vals = apply_params([p.nav, p.pp, ms.MisionParams(), DirectoParams()], cfg)
     objs = (nc.NavParams(), PilotoParams(), ms.MisionParams(), DirectoParams())

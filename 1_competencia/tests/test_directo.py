@@ -503,3 +503,26 @@ def test_prohibido_lateral_sin_bandera_a_la_vista_se_ignora_por_posicion(salida_
     assert not any(x["senal"] == "prohibido" for x in d.decisiones), d.decisiones
     assert res["b_true"][0] > 3.0, res["b_true"]
     assert any("prohibido lateral" in e for e in d.eventos), d.eventos
+
+
+# --- circuito completo del video con los perfiles de competencia ---------------------------
+
+@pytest.mark.parametrize("cfg,ancho", [("config.json", 0.75), ("config_rapido.json", 0.75),
+                                       ("config_rapido.json", 0.65), ("config_rapido.json", 0.90)])
+def test_circuito_del_video_condiciones_duras_sin_choques(cfg, ancho):
+    """Latencia de cmd_vel 0.2 s, LiDAR atrasado 0.3 s, 1 cm de ruido y 3 % de deriva."""
+    import json
+    import bench_directo as bd
+    import pista_video as pv
+    with open(os.path.join(ROOT, cfg), encoding="utf-8") as f:
+        ajustes = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    paredes, objetos = pv.circuito(ancho)
+    r = bd.simular(paredes, objetos, ajustes, latencia=2, retardo=3, ruido=0.01, deriva=0.03)
+    assert r["ok"], r["d"].eventos
+    assert r["choques"] == 0
+    assert r["holgura"] >= bd.HOLGURA_MIN
+    assert math.hypot(*r["true"][:2]) < 0.35
+    assert [x["accion"] for x in r["d"].decisiones] == ["izq", "izq", "der", "der", "der", "izq", "izq"]
+    assert len(r["d"].qrs) == 2
+    if cfg == "config_rapido.json":
+        assert r["t"] < 175.0      # base: ~250 s a 0.75 m
