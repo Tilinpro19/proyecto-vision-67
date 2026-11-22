@@ -44,7 +44,7 @@ CONDICIONES = {"dura": (2, 3, 0.01, 0.03), "dura-": (2, 3, 0.01, -0.03)}
 
 
 def escenarios():
-    e = {f"video_{int(w * 100)}": pv.circuito(w) for w in (0.65, 0.75, 0.80, 0.90)}
+    e = {f"video_{int(w * 100)}": pv.circuito(w) for w in (0.55, 0.60, 0.65, 0.75, 0.80, 0.90)}
     e["real_56"] = (pista_angosta(), [("der", (1.19, 0.0), IZQ_X), ("cara", (0.9, -2.5), IZQ_Y)])
     return e
 
