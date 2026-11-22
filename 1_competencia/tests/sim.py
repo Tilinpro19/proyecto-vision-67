@@ -90,13 +90,31 @@ class Sim:
         self.odom = nc.compose(self.odom, (lin * dt, 0.0, ang * dt * (1 + self.yaw_drift)))
 
 
-def run(sim, piloto, goal, t_max=180.0, dt=0.1, pause=0.0):
-    """Mision completa A -> B -> A en el simulador. Devuelve dict con resultados."""
-    piloto.fijar_origen(sim.odom, *sim.scan())
+def run(sim, piloto, goal, t_max=180.0, dt=0.1, pause=0.0,
+        latencia=0, lidar_cada=1, ruido=0.0, seed=0):
+    """Mision completa A -> B -> A en el simulador. Devuelve dict con resultados.
+    Modo realista (por defecto apagado, asi los tests de siempre no cambian):
+      latencia   ciclos que tarda un cmd_vel en llegar a las ruedas (DDS por Wi-Fi)
+      lidar_cada el scan se renueva cada tantos ciclos (RPLIDAR A1 ~5-7 Hz + DDS)
+      ruido      desviacion tipica (m) del ruido de rango del LiDAR"""
+    rng = np.random.default_rng(seed)
+    cola = [(0.0, 0.0)] * latencia
+    scan, edad = sim.scan(), 0
+
+    def leer():
+        r, a = scan
+        return (r + rng.normal(0.0, ruido, r.shape), a) if ruido else (r, a)
+
+    piloto.fijar_origen(sim.odom, *leer())
     piloto.ir_a(goal)
     t, phase, t_b, reached_b = 0.0, "ida", None, False
     while t < t_max:
-        lin, ang, info = piloto.paso(t, sim.odom, *sim.scan())
+        lin, ang, info = piloto.paso(t, sim.odom, *leer())
+        cola.append((lin, ang))
+        lin, ang = cola.pop(0)
+        edad += 1
+        if edad >= lidar_cada:
+            scan, edad = sim.scan(), 0
         if phase == "ida" and info["dist"] < piloto.pp.goal_tol:
             phase, t_b, reached_b = "vuelta", t, True
             b_true = sim.true

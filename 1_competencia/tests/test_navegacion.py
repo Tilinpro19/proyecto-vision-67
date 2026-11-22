@@ -81,6 +81,16 @@ def test_progress_monitor():
     assert not any(m.update(t * 0.1, (t * 0.02, 0.0)) for t in range(40))
 
 
+def test_progress_monitor_giro_en_el_sitio_cuenta_como_avance():
+    """Girar 180 grados quieto (p. ej. en B para volver) no es un atasco; oscilar si."""
+    m = nc.ProgressMonitor(window=2.0, min_progress=0.1)
+    giro = [m.update(t * 0.1, (0.0, 0.0), nc.wrap(t * 0.1 * 0.8)) for t in range(41)]
+    assert not any(giro)
+    m.reset()
+    osc = [m.update(t * 0.1, (0.0, 0.0), 0.3 * math.sin(t)) for t in range(41)]
+    assert osc[-1]
+
+
 def test_icp_recupera_el_desplazamiento():
     walls = room() + box(1.0, 1.0, 0.4, 0.3) + box(2.5, -1.0, 0.3, 0.6)
     ref = nc.subsample(nc.to_xy(*scan_from(walls, (0.0, 0.0, 0.0))))

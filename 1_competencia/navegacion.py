@@ -155,7 +155,7 @@ class Piloto:
                 self.crumbs.prune_branch(len(self.crumbs) - 2, len(self.crumbs))
             self.escape = ("atras", t, pose, None)
 
-        if self.escape is None and self.monitor.update(t, pose[:2]):
+        if self.escape is None and self.monitor.update(t, pose[:2], pose[2]):
             info["atasco_repetido"] = self._iniciar_escape(t, pose, R, A, info["front"])
         if self.escape is not None:
             lin, ang = self._escape(t, pose, R, A, r, a)

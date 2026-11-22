@@ -245,23 +245,31 @@ def angular_limit(max_angular, nearest_dist, p=NavParams()):
 
 class ProgressMonitor:
     """Atasco = en los ultimos 'window' s el robot no se alejo 'min_progress' m del punto
-    donde estaba al inicio de la ventana."""
+    donde estaba al inicio de la ventana NI giro en neto 'min_turn' rad (girar 180 grados
+    quieto para volver no es atasco; oscilar izquierda-derecha en el sitio si)."""
 
-    def __init__(self, window=5.0, min_progress=0.08):
-        self.window, self.min_progress = window, min_progress
+    def __init__(self, window=5.0, min_progress=0.08, min_turn=math.radians(60)):
+        self.window, self.min_progress, self.min_turn = window, min_progress, min_turn
         self.hist = deque()
 
     def reset(self):
         self.hist.clear()
 
-    def update(self, t, xy):
-        self.hist.append((t, np.asarray(xy, float)))
+    def update(self, t, xy, yaw=None):
+        giro = 0.0
+        if yaw is not None and self.hist and self.hist[-1][2] is not None:
+            giro = float(wrap(yaw - self.hist[-1][3]))
+        acum = (self.hist[-1][2] if self.hist else 0.0) or 0.0
+        self.hist.append((t, np.asarray(xy, float), acum + giro if yaw is not None else None,
+                          yaw))
         while len(self.hist) > 1 and t - self.hist[1][0] >= self.window:
             self.hist.popleft()
-        t0, p0 = self.hist[0]
+        t0, p0, g0, _ = self.hist[0]
         if t - t0 < self.window:
             return False
-        return max(np.linalg.norm(q - p0) for _, q in self.hist) < self.min_progress
+        if g0 is not None and abs(self.hist[-1][2] - g0) >= self.min_turn:
+            return False
+        return max(np.linalg.norm(q[1] - p0) for q in self.hist) < self.min_progress
 
 
 # --- poses 2D (x, y, yaw) -------------------------------------------------------
