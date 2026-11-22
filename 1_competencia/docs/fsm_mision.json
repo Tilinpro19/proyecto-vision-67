@@ -1,0 +1,197 @@
+{
+ "schema_version": 1,
+ "diagram_type": "lifecycle",
+ "meta": {
+  "title": "FSM de la misión TurtleBot4",
+  "locale": "en",
+  "viewBox": [
+   980,
+   680
+  ],
+  "quality_profile": "showcase"
+ },
+ "lanes": [
+  {
+   "id": "main",
+   "label": "Misión (nivel 1)"
+  },
+  {
+   "id": "nav",
+   "label": "Recuperación de navegación (nivel 2)"
+  },
+  {
+   "id": "term",
+   "label": "Salidas"
+  }
+ ],
+ "states": [
+  {
+   "id": "espera",
+   "type": "start",
+   "label": "ESPERA",
+   "sublabel": "sensores listos",
+   "lane": "main",
+   "col": 0,
+   "step": "01"
+  },
+  {
+   "id": "ir_a_b",
+   "type": "active",
+   "label": "IR_A_B",
+   "sublabel": "navegar a B",
+   "lane": "main",
+   "col": 1,
+   "step": "02"
+  },
+  {
+   "id": "escanear",
+   "type": "decision",
+   "label": "ESCANEAR",
+   "sublabel": "lleg� a B: giro+rostros",
+   "lane": "main",
+   "col": 2,
+   "step": "03"
+  },
+  {
+   "id": "volver",
+   "type": "active",
+   "label": "VOLVER_A_A",
+   "sublabel": "navegar a A",
+   "lane": "main",
+   "col": 3,
+   "step": "04"
+  },
+  {
+   "id": "anunciar",
+   "type": "active",
+   "label": "ANUNCIAR",
+   "sublabel": "lleg� a A: nombre",
+   "lane": "main",
+   "col": 4,
+   "step": "05"
+  },
+  {
+   "id": "atascado",
+   "type": "waiting",
+   "label": "ATASCADO",
+   "sublabel": "sin progreso: recuperar",
+   "lane": "nav",
+   "col": 1,
+   "tag": "nivel 2"
+  },
+  {
+   "id": "recuperar",
+   "type": "active",
+   "label": "RECUPERAR",
+   "sublabel": "retroceder y girar",
+   "lane": "nav",
+   "col": 1,
+   "tag": "nivel 2",
+   "yOffset": 100
+  },
+  {
+   "id": "reintentar",
+   "type": "waiting",
+   "label": "REINTENTAR_ESCANEO",
+   "sublabel": "límite de intentos",
+   "lane": "nav",
+   "col": 0,
+   "tag": "propuesto"
+  },
+  {
+   "id": "parada",
+   "type": "failure",
+   "label": "PARADA",
+   "sublabel": "agot� intentos / parar / t_max",
+   "lane": "nav",
+   "col": 0,
+   "tag": "terminal",
+   "yOffset": 100
+  },
+  {
+   "id": "fin",
+   "type": "success",
+   "label": "FIN",
+   "sublabel": "misión completa",
+   "lane": "term",
+   "col": 2,
+   "tag": "terminal"
+  }
+ ],
+ "transitions": [
+  {
+   "from": "espera",
+   "to": "ir_a_b"
+  },
+  {
+   "from": "ir_a_b",
+   "to": "escanear"
+  },
+  {
+   "from": "escanear",
+   "to": "volver"
+  },
+  {
+   "from": "volver",
+   "to": "anunciar"
+  },
+  {
+   "from": "escanear",
+   "to": "reintentar",
+   "variant": "dashed",
+   "route": "straight",
+   "fromSide": "bottom",
+   "toSide": "top"
+  },
+  {
+   "from": "anunciar",
+   "to": "fin",
+   "variant": "emphasis",
+   "route": "straight",
+   "fromSide": "bottom",
+   "toSide": "top"
+  },
+  {
+   "from": "reintentar",
+   "to": "parada",
+   "variant": "security",
+   "route": "straight",
+   "fromSide": "bottom",
+   "toSide": "top"
+  },
+  {
+   "from": "atascado",
+   "to": "recuperar",
+   "variant": "dashed",
+   "route": "straight",
+   "fromSide": "bottom",
+   "toSide": "top"
+  }
+ ],
+ "cards": [
+  {
+   "dot": "cyan",
+   "title": "Nivel 1",
+   "items": [
+    "Seis fases lineales de la misión",
+    "NAVEGAR(meta) reutilizado en IR_A_B y VOLVER_A_A"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Nivel 2",
+   "items": [
+    "Atasco, recuperación y descarte de meta",
+    "REINTENTAR_ESCANEO acotado es la mejora propuesta"
+   ]
+  },
+  {
+   "dot": "rose",
+   "title": "Capa transversal",
+   "items": [
+    "PARADA preempta cualquier estado",
+    "Causas: /mision/parar, t_max, sensores sin datos, batería"
+   ]
+  }
+ ]
+}
