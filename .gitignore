@@ -13,6 +13,7 @@ env/
 *.log
 logs/
 *.npz
+!1_competencia/tests/scans_reales/*.npz
 *.zip
 
 # Editor / OS

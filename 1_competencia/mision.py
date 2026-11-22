@@ -660,7 +660,7 @@ def reloj_ok(s, m, max_desfase):
     una fecha vieja y rompe TF/SLAM; con max_desfase=0 no se comprueba."""
     if not max_desfase:
         return True
-    d = desfase_reloj(getattr(s.lidar, "stamp", None), time.time())
+    d = desfase_reloj(getattr(getattr(s, "lidar", None), "stamp", None), time.time())
     if d is None or abs(d) <= max_desfase:
         return True
     m.evento(f"RELOJ: el robot va {d:+.0f} s respecto al PC (limite {max_desfase:.0f} s). Sincroniza la hora "
