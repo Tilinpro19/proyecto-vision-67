@@ -94,6 +94,7 @@ class DirectoParams:
     # Prohibido pegado en una pared/caja LATERAL (video de referencia: justo antes de la bandera)
     # no cierra el camino de frente: solo cuenta si queda cerca del eje del pasillo.
     prohibido_borde: float = 0.15  # m  lateral > max(0.15, ancho/2 - esto) -> lateral, se ignora
+    flechas_solo_frente: bool = True  # el mismo filtro para flechas (video: flecha impresa en una caja lateral)
     # Tras cada giro: rumbo de la odometria corregido UNA vez con las dos paredes del pasillo
     # (en 0.57 m, 10-15 grados de deriva tras la media vuelta dejan al robot contra una pared)
     rumbo_paredes: bool = True
@@ -232,6 +233,9 @@ class PilotoDirecto:
                 vio_bandera = d is None or d <= self.dp.d_bandera
             elif s.tipo == "prohibido" and (hay_bandera or self._prohibido_lateral(s, ancho_img, pose, r, a)):
                 continue     # la bandera manda / letrero al costado: no cierra el frente
+            elif (s.tipo in ("izq", "der") and self.dp.flechas_solo_frente
+                  and self._prohibido_lateral(s, ancho_img, pose, r, a)):
+                continue     # flecha al costado (caja impresa): no es la del cruce
             elif s.tipo in ("izq", "der", "prohibido") and not nav_tomada:
                 nav_tomada = True    # detectar() ordena por area: la mas cercana primero
                 self._leer_flecha(s, ancho_img, pose, r, a)
@@ -645,7 +649,7 @@ class PilotoDirecto:
         return d if d is not None else getattr(s, "distancia_m", None)
 
     def _prohibido_lateral(self, s, ancho, pose, r, a):
-        """True si el prohibido esta a un costado del eje del pasillo (no al frente)."""
+        """True si la senal (prohibido o flecha) esta a un costado del eje del pasillo."""
         b = self._rumbo_senal(s, ancho)
         d = self._rango_senal(s, ancho, r, a)
         if d is None:
@@ -657,7 +661,7 @@ class PilotoDirecto:
         clave = (round(pose[0] + d * math.cos(pose[2] + b), 1), round(pose[1] + d * math.sin(pose[2] + b), 1))
         if clave not in self._prohibidos_lat:
             self._prohibidos_lat.add(clave)
-            self.eventos.append(f"prohibido lateral ignorado: a {lat:+.2f} m del eje (limite {limite:.2f})")
+            self.eventos.append(f"{s.tipo} lateral ignorado: a {lat:+.2f} m del eje (limite {limite:.2f})")
         return True
 
     def _leer_flecha(self, s, ancho, pose, r, a):

@@ -526,3 +526,20 @@ def test_circuito_del_video_condiciones_duras_sin_choques(cfg, ancho):
     assert len(r["d"].qrs) == 2
     if cfg == "config_rapido.json":
         assert r["t"] < 175.0      # base: ~250 s a 0.75 m
+
+
+@pytest.mark.parametrize("filtro", [True, False])
+def test_flecha_impresa_en_caja_lateral_no_desvia(filtro):
+    # video 00:46: caja con una flecha impresa al costado del pasillo, frente a una salida libre
+    objetos = [("izq", (2.0, -0.4), IZQ_Y)] + OBJ_FINAL
+    res = simular_directo(_tramo_final(True), objetos, t_max=120.0,
+                          dp_extra=dict(flechas_solo_frente=filtro))
+    d = res["d"]
+    if filtro:
+        assert res["ok"] and res["collisions"] == 0, d.eventos
+        assert d.decisiones == [] or all(x["accion"] != "izq" for x in d.decisiones), d.decisiones
+        assert res["b_true"][0] > 3.0
+        assert any("izq lateral ignorado" in e for e in d.eventos), d.eventos
+    else:
+        # sin el filtro la flecha falsa se confirma (asi era antes)
+        assert any("flecha confirmada: izq" in e for e in d.eventos), d.eventos
