@@ -18,9 +18,10 @@ sys.path[:0] = [HERE, os.path.dirname(HERE)]
 
 import matplotlib  # noqa: E402
 
-if "--guardar" in sys.argv:
-    matplotlib.use("Agg")
+matplotlib.use("Agg")     # se dibuja en memoria y se muestra con OpenCV (en WSL no hay tkinter)
+import cv2  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 from matplotlib.animation import FuncAnimation  # noqa: E402
 
 import directo as dr  # noqa: E402
@@ -107,6 +108,19 @@ def titulo_de(nombre, deriva, retardo, v, res):
             f"choques={res['collisions']}  min a pared={res['min_clear']:.2f} m")
 
 
+def a_imagen(fig):
+    fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba())
+    return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+
+
+def mostrar(fig, espera=0):
+    """Muestra la figura en una ventana de OpenCV. Devuelve False si se aprieta q / Esc."""
+    cv2.imshow("simulacion", a_imagen(fig))
+    k = cv2.waitKey(espera) & 0xFF
+    return k not in (ord("q"), 27)
+
+
 def dibujar(nombre, deriva, retardo, v, animar, guardar):
     paredes, objetos, tray, res = correr(nombre, deriva, retardo, v)
     fig, ax = plt.subplots(figsize=(8, 7))
@@ -125,7 +139,9 @@ def dibujar(nombre, deriva, retardo, v, animar, guardar):
             fig.savefig(ruta, dpi=110, bbox_inches="tight")
             print("guardado", ruta)
         else:
-            plt.show()
+            print("ventana: cualquier tecla = siguiente / salir")
+            mostrar(fig)
+        plt.close(fig)
         return
     linea_i, = ax.plot([], [], "-", color="tab:blue", lw=2)
     linea_v, = ax.plot([], [], "-", color="tab:orange", lw=2)
@@ -153,7 +169,14 @@ def dibujar(nombre, deriva, retardo, v, animar, guardar):
         anim.save(ruta, writer="pillow", fps=20)
         print("guardado", ruta)
     else:
-        plt.show()
+        print("animacion: q = cortar; al final, cualquier tecla para cerrar")
+        for k in range(len(tray) // paso + 1):
+            cuadro(k)
+            if not mostrar(fig, 15):
+                break
+        else:
+            mostrar(fig)
+    plt.close(fig)
 
 
 def main():
