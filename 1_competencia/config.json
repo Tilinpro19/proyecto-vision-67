@@ -20,5 +20,11 @@
   "senal_qr": "registrar",
   "regreso_modo": "migas",
   "flechas_marco": "robot",
-  "bandera_frames": 2
+  "bandera_frames": 2,
+  "v_recto": 0.26,
+  "v_acercar": 0.20,
+  "v_regreso": 0.26,
+  "d_giro": 0.72,
+  "d_frente": 0.70,
+  "fov_deg": 69.0
 }

@@ -38,3 +38,4 @@ seguimiento_vision/
 # resultados de corridas en la Pi
 1_competencia/resultados/
 1_competencia/logs/
+1_competencia/tests/sim_png/

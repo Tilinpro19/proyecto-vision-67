@@ -3,13 +3,17 @@ Mision completa de la competencia: ESPERA -> IR_A_B -> ESCANEAR -> VOLVER_A_A ->
 (PARADA = parada de emergencia). Cronometro global desde que sale de A, registro de
 eventos en logs/ y resultado en JSON (lo usa 2_laboratorio/calibrar.py).
 
-  Tarea A (autonoma):  ./tarea_a.sh --goal 3.0 0.5
+  Tarea A (autonoma):  ./tarea_a.sh                 (modo directo, sin meta fija)
+                       ./tarea_a.sh --goal 3.0 0.5  (B medido con cinta)
   Tarea B (gestos):    ./tarea_b.sh
-  (o directo: python3 mision.py --tarea A --goal 3.0 0.5 [--dry] [--ver])
+  (o: python3 mision.py --tarea A [--modo directo|guiado|goal] [--goal X Y] [--ver])
 
-Tarea A: B se da como (x, y) en m respecto a A (x = hacia donde mira el robot en A,
-y = izquierda), medido con cinta el dia de la competencia. La llegada a B es enchufable
-(--param llegada=distancia|foto|cualquiera, ver llegada_b()).
+Tarea A sin --goal (por defecto, --modo directo, ver directo.py): recto hasta la flecha,
+giro en el sitio, recto ... hasta las caras (bandera cercana, caras al frente o callejon
+con caras); ignora huecos laterales sin flecha. Ajustes: --param v_recto=, d_giro=, ...
+--modo guiado: explorador de pasillos/cruces (PilotoGuiado) para pistas con cruces sin flecha.
+--goal X Y: B en m respecto a A (x = hacia donde mira el robot en A, y = izquierda).
+La llegada a B con --goal es enchufable (--param llegada=distancia|foto|cualquiera).
 Tarea B: palma 1 s arma y arranca el cronometro; V 1.5 s en B = escanear la foto;
 de vuelta en A, V 1.5 s (o automatico al estar a menos de home_tol_b de A) = anunciar.
 
@@ -43,6 +47,8 @@ class MisionParams:
     foto_ancho: float = 0.10      # cara >= esta fraccion del ancho de imagen = "llegue (foto)"
     foto_frente: float = 0.70     # m   ...y con menos que esto libre al frente
     escaneo_frames: int = 12      # frames con cara para decidir el nombre
+    escaneo_frames_min: int = 4   # desde aqui, si la identificacion ya es clara, no espera mas
+    escaneo_margen_rapido: float = 0.10  # ...clara = seguro y con esta ventaja sobre el segundo
     escaneo_max: float = 15.0     # s   maximo escaneando/buscando la cara en B
     busqueda_angular: float = 0.4 # rad/s girando para buscar la foto
     home_tol_b: float = 0.35      # m   Tarea B: anuncio automatico cerca de A
@@ -154,8 +160,10 @@ class Mision:
         self.choques += 1
         self.evento(f"CHOQUE #{self.choques} ({origen})")
 
-    def guardar_diagnostico(self, motivo, pose, ranges, angles, crumbs=None, guardian=None):
-        """Guarda scan, pose y migas en un .npz dentro de log_dir para depurar atascos/choques."""
+    def guardar_diagnostico(self, motivo, pose, ranges, angles, crumbs=None, guardian=None,
+                            imagen=None, nota=None):
+        """Guarda scan, pose y migas en un .npz dentro de log_dir para depurar atascos/choques.
+        imagen: ultimo cuadro de la camara (se guarda como JPEG en 'jpg'); nota: texto libre."""
         if not self.log_dir:
             return None
         self._diag_seq += 1
@@ -168,6 +176,16 @@ class Mision:
             extra = dict(virt_r=np.asarray(guardian.virtual[0], dtype=np.float32),
                          virt_a=np.asarray(guardian.virtual[1], dtype=np.float32),
                          depth4=guardian.ultimo_cuadro)
+        if imagen is not None:
+            try:
+                import cv2
+                ok, buf = cv2.imencode(".jpg", imagen, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok:
+                    extra["jpg"] = buf.reshape(-1)
+            except Exception:   # sin cv2 o imagen rara: el diagnostico sale igual sin foto
+                pass
+        if nota:
+            extra["nota"] = np.array(str(nota))
         np.savez_compressed(
             ruta,
             **extra,
@@ -226,18 +244,32 @@ class Escaneo:
     """ESCANEAR sin bloquear: junta frames con cara; si no ve ninguna, barre girando.
     paso(t, img_nueva) -> (angular, frames listos o None)."""
 
-    def __init__(self, rostros, mp, t0, buscar=True, limite=None):
+    def __init__(self, rostros, mp, t0, buscar=True, limite=None, identificar_fn=None):
         self.rostros, self.mp, self.t0, self.buscar = rostros, mp, t0, buscar
         self.limite = limite or mp.escaneo_max
         self.frames, self.visto = [], False
+        self._identificar_fn = identificar_fn   # frames -> facial.Resultado (salida temprana)
+
+    def _claro(self):
+        """Con escaneo_frames_min frames ya hay un nombre seguro con ventaja amplia: identificar
+        promedia los 3 mejores frames, esperar a 12 (~8 s en la Pi) no cambia el resultado."""
+        n0 = max(1, self.mp.escaneo_frames_min)
+        # identificar re-detecta todos los frames (~0.1 s c/u en la Pi): probar en n0, n0+3, ...
+        if self._identificar_fn is None or len(self.frames) < n0 or (len(self.frames) - n0) % 3:
+            return False
+        res = self._identificar_fn(self.frames)
+        segundo = res.ranking[1][1] if len(res.ranking) > 1 else -1.0
+        return bool(res.seguro and res.score - segundo >= self.mp.escaneo_margen_rapido)
 
     def paso(self, t, img):
+        nuevo = False
         if img is not None:
             _, faces = self.rostros.detectar(img)
             if len(faces):
                 self.frames.append(img)
-                self.visto = True
-        listo = len(self.frames) >= self.mp.escaneo_frames or t - self.t0 > self.limite
+                self.visto = nuevo = True
+        listo = (len(self.frames) >= self.mp.escaneo_frames or t - self.t0 > self.limite
+                 or (nuevo and self._claro()))
         if listo:
             return 0.0, self.frames
         if self.visto or not self.buscar or t - self.t0 < 1.5:
@@ -432,10 +464,11 @@ def args_parser():
 
     ap = argparse.ArgumentParser(description="Mision completa A -> B -> A")
     ap.add_argument("--tarea", choices=("A", "B"), required=True)
-    ap.add_argument("--modo", choices=("auto", "goal", "guiado"), default="auto",
-                    help="Tarea A: 'goal' usa --goal X Y; 'guiado' sigue senales/pasillos sin --goal")
+    ap.add_argument("--modo", choices=("auto", "goal", "directo", "guiado"), default="auto",
+                    help="Tarea A: 'goal' usa --goal X Y; 'directo' (auto sin --goal) va de flecha en "
+                         "flecha hasta las caras; 'guiado' explora pasillos y cruces sin flecha")
     ap.add_argument("--goal", type=float, nargs=2, metavar=("X", "Y"),
-                    help="Tarea A: B en m respecto a A (x frente, y izquierda); si se omite usa modo guiado")
+                    help="Tarea A: B en m respecto a A (x frente, y izquierda); si se omite usa modo directo")
     ap.add_argument("--galeria", default=os.path.join(HERE, "galeria"))
     ap.add_argument("--persona", default="",
                     help="Nombre de la persona objetivo a buscar en B (gira 360, valida cara y escanea su QR)")
@@ -633,7 +666,12 @@ def _crear_escaneo(s, mp, t):
             mp.persona, s.rostros, s.galeria, mp, t,
             yaw0=s.odom.pose[2], umbral=s.umbral,
         )
-    return Escaneo(s.rostros, mp, t)
+    fn = None
+    if getattr(s, "galeria", None) is not None:
+        import facial
+        umbral = getattr(s, "umbral", None) or facial.UMBRAL
+        fn = lambda fr: facial.identificar(fr, s.rostros, s.galeria, umbral)  # noqa: E731
+    return Escaneo(s.rostros, mp, t, identificar_fn=fn)
 
 
 def _procesar_escaneo(escaneo, s, m, t, img):
@@ -1052,6 +1090,111 @@ def tarea_a_guiada(args, s, m, piloto):
             cv2.waitKey(1)
 
 
+def _volcar_directo(d, m):
+    """Eventos, decisiones y QR de PilotoDirecto al registro de la mision."""
+    for txt in d.eventos:
+        m.evento(txt)
+    d.eventos.clear()
+    for dec in d.decisiones[len(m.decisiones):]:
+        m.decisiones.append(dict(dec, t=round(m.tiempo(), 2)))
+    for q in d.qrs:
+        if q not in m.hitos_qr:
+            m.hitos_qr.append(q)
+            m.senales.append(dict(t=round(m.tiempo(), 2), tipo="qr", texto=q))
+
+
+def tarea_a_directa(args, s, m, piloto, dp=None):
+    """Tarea A sin --goal, modo directo (directo.py): recto hasta la flecha, giro en el sitio,
+    recto ... hasta las caras (bandera cercana, caras al frente o callejon con caras);
+    escanea, vuelve a A por migas+ICP a v_regreso y anuncia."""
+    import cv2
+
+    import directo as dr
+    import senales_forma as sf
+
+    mp = s.mp
+    dp = dp or dr.DirectoParams()
+    cont = ContadorChoques(mp.choque_dist)
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    d.iniciar(s.odom.pose, *s.lidar.data)
+    if mp.cuenta:
+        m.evento(f"salgo en {mp.cuenta:.0f} s")
+        time.sleep(mp.cuenta)
+    m.ir(SEGUIR, f"modo directo (v_recto {dp.v_recto:.2f} m/s)")
+    escaneo, t_cam, frente = None, -1e9, math.inf
+    ultimo_img, n_dec = None, 0     # foto de cada decision para depurar (npz en logs/)
+
+    while m.activa():
+        s.spin(1.0 / mp.rate)
+        t = time.monotonic()
+        if not comunes(s, m, cont, t, piloto):
+            continue
+        _volcar_eventos_piloto(s, m, piloto)
+        _volcar_directo(d, m)
+
+        img = s.frame_nuevo() if m.estado in (SEGUIR, ESCANEAR) or args.ver else None
+        if img is not None:
+            ultimo_img = img
+
+        if m.estado == SEGUIR:
+            t_p = m.perfil.reloj()
+            r, a = s.lidar.data
+            if img is not None and (t - t_cam) >= mp.cam_periodo:
+                t_cam = t
+                senales = sf.detectar(img, esfuerzo_qr=1) if sf.buscar_candidatos(img) else []
+                d.ver_senales(t, senales, img.shape[1], s.odom.pose, r, a)
+                # Caras solo cerca del fondo o mirando un callejon: en marcha cuestan CPU de la
+                # Pi y una cara del publico a un costado no debe cortar el recorrido.
+                if d.estado == dr.MIRAR or frente < dp.d_lento:
+                    d.ver_caras(t, s.vista_cara(img))
+            lin, ang, info = d.paso(t, s.odom.pose, r, a, bumper_hit=s.bump())
+            if len(d.decisiones) > n_dec or info["accion"] == "llegada_b":
+                n_dec = len(d.decisiones)
+                dec = d.decisiones[-1] if d.decisiones else {}
+                motivo = "llegada" if info["accion"] == "llegada_b" else f"decision_{dec.get('accion')}"
+                m.guardar_diagnostico(motivo, info["pose"], r, a, imagen=ultimo_img,
+                                      nota=json.dumps(dec, default=str))
+            if "front" in info:   # libre inflado de Piloto -> distancia aproximada a la pared
+                frente = info.get("frente_crudo", info["front"] + piloto.nav.inflate)
+            m.perfil.registrar(t_p)
+            if info["accion"] == "llegada_b":
+                s.sender.send(0.0, 0.0)
+                _volcar_directo(d, m)
+                m.ir(LLEGADA_B, d.motivo_llegada or "")
+                m.ir(ESCANEAR, "analizando rostros en B")
+                escaneo = _crear_escaneo(s, mp, t)
+                continue
+            s.sender.send(lin, ang)
+        elif m.estado == ESCANEAR:
+            ang, listo = _procesar_escaneo(escaneo, s, m, t, img)
+            s.sender.send(0.0, ang)
+            if listo:
+                s.sender.send(0.0, 0.0)
+                if not args.ver:
+                    s.cam.pausar()
+                piloto.pp.max_linear = dp.v_regreso
+                piloto.volver()
+                m.ir(VOLVER_A_A, f"regreso por migas a {dp.v_regreso:.2f} m/s")
+        elif m.estado == VOLVER_A_A:
+            t_p = m.perfil.reloj()
+            lin, ang, info = d.regreso(t, s.odom.pose, *s.lidar.data, bumper_hit=s.bump())
+            m.perfil.registrar(t_p)
+            if info["llegada"]:
+                s.sender.stop()
+                m.ir(ANUNCIAR, f"a {info['dist']:.2f} m de A")
+                continue
+            s.sender.send(lin, ang)
+        elif m.estado == ANUNCIAR:
+            s.sender.stop()
+            s.anunciador.anunciar(_texto_anuncio(m))
+            m.ir(FIN)
+        if args.ver and img is not None:
+            cv2.putText(img, f"{m.estado}/{d.estado} {m.tiempo():.1f}s", (5, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.imshow("mision A directa", img)
+            cv2.waitKey(1)
+
+
 def tarea_b(args, s, m):
     import cv2
 
@@ -1130,10 +1273,12 @@ def main():
     from comun import apply_params
 
     args = args_parser().parse_args()
-    piloto, mp = Piloto(), MisionParams()
+    from directo import DirectoParams
+
+    piloto, mp, dp = Piloto(), MisionParams(), DirectoParams()
     config = args.config or (os.path.join(HERE, "config.json")
                              if os.path.isfile(os.path.join(HERE, "config.json")) else None)
-    valores = apply_params([piloto.nav, piloto.pp, mp], config, args.param)
+    valores = apply_params([piloto.nav, piloto.pp, mp, dp], config, args.param)
     if args.persona:
         mp.persona = args.persona.strip()
 
@@ -1147,8 +1292,10 @@ def main():
         if not esperar_sensores(s, m):
             raise SystemExit("No llegan /scan y /odom: revisa la conexion (tb4_check.sh).")
         if args.tarea == "A":
-            if args.modo == "guiado" or (args.modo == "auto" and args.goal is None):
+            if args.modo == "guiado":
                 tarea_a_guiada(args, s, m, piloto)
+            elif args.modo == "directo" or (args.modo == "auto" and args.goal is None):
+                tarea_a_directa(args, s, m, piloto, dp)
             else:
                 tarea_a(args, s, m, piloto)
         else:
@@ -1159,7 +1306,8 @@ def main():
         if s is not None:
             s.cerrar()
         res = m.resultado()
-        res["params"] = dict(nav=asdict(piloto.nav), piloto=asdict(piloto.pp), mision=asdict(mp))
+        res["params"] = dict(nav=asdict(piloto.nav), piloto=asdict(piloto.pp), mision=asdict(mp),
+                             directo=asdict(dp))
         m.evento(f"RESULTADO: {json.dumps({k: v for k, v in res.items() if k != 'params'})}")
         if args.resultado:
             with open(args.resultado, "w", encoding="utf-8") as f:
