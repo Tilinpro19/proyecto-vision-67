@@ -40,6 +40,7 @@ class PilotoParams:
     home_tol: float = 0.20        # m     llegada a A
     stuck_time: float = 5.0       # s     sin avanzar stuck_dist -> maniobra de salida
     stuck_dist: float = 0.08      # m
+    stuck_wait: float = 15.0      # s     sin avanzar y SIN empujar (frena a proposito) -> salida sin barreras
     back_dist: float = 0.15       # m     retroceso de la maniobra
     back_speed: float = 0.08      # m/s
     escape_turn: float = 2.0      # s     maximo girando hacia lo mas abierto
@@ -75,7 +76,7 @@ class Piloto:
         self.crumbs = nc.BreadcrumbGraph()
         self.keyframes = []
         self.virtual = nc.VirtualObstacles()
-        self.monitor = nc.ProgressMonitor(self.pp.stuck_time, self.pp.stuck_dist)
+        self.monitor = nc.ProgressMonitor(self.pp.stuck_time, self.pp.stuck_dist, self.pp.stuck_wait)
         self.prev_heading = 0.0
         self.last_t = None
         self.lin = 0.0
@@ -155,8 +156,9 @@ class Piloto:
                 self.crumbs.prune_branch(len(self.crumbs) - 2, len(self.crumbs))
             self.escape = ("atras", t, pose, None)
 
-        if self.escape is None and self.monitor.update(t, pose[:2]):
-            info["atasco_repetido"] = self._iniciar_escape(t, pose, R, A, info["front"])
+        if self.escape is None and self.monitor.update(t, pose[:2], self.lin):
+            info["atasco_repetido"] = self._iniciar_escape(
+                t, pose, R, A, info["front"], espera=self.monitor.motivo == "espera")
         if self.escape is not None:
             lin, ang = self._escape(t, pose, R, A, r, a)
         else:
@@ -169,7 +171,9 @@ class Piloto:
             # no avanzar mientras se gira; girar en el sitio hasta despejar el frente.
             eff_free = min(free, info["front"])
             lin, ang = nc.speed_command(h, eff_free, pp.max_linear, pp.max_angular, nav)
-            lin *= nc.side_scale(r, a, nav)   # mas despacio con poca holgura lateral
+            # Poca holgura lateral limita la velocidad, pero sin multiplicarse con el freno frontal:
+            # cada freno ya cubre su riesgo, el producto frenaba dos veces por lo mismo.
+            lin = min(lin, pp.max_linear * nc.side_scale(r, a, nav))
 
             # Reduccion suave muy cerca de la meta final (ultimos 40 cm) para no pasarse
             if dist < 0.40 and not self.escape:
@@ -243,7 +247,7 @@ class Piloto:
         self._log(t, f"ICP corrige {jump * 100:.0f} cm / {math.degrees(nc.wrap(true[2] - pose[2])):+.1f} deg")
         return true
 
-    def _iniciar_escape(self, t, pose, R, A, front):
+    def _iniciar_escape(self, t, pose, R, A, front, espera=False):
         if self._last_escape_xy is not None and math.hypot(
                 pose[0] - self._last_escape_xy[0], pose[1] - self._last_escape_xy[1]) < 0.40:
             self._repeat_escapes += 1
@@ -252,7 +256,11 @@ class Piloto:
         self._last_escape_xy = (pose[0], pose[1])
 
         repetido = self._repeat_escapes >= 2
-        if self.lin > 0.03 and front > self.pp.blind_front:
+        if espera:
+            # No empujaba (frenaba ante algo cercano): no es un obstaculo bajo ni una trampa,
+            # asi que no se siembran barreras; solo se reposiciona con la maniobra de salida.
+            self._log(t, f"sin avance en ({pose[0]:.2f}, {pose[1]:.2f}) esperando con obstaculo cerca: reposiciono sin barreras")
+        elif self.lin > 0.03 and front > self.pp.blind_front:
             # Barrera permanente (t=None): los obstaculos bajos no desaparecen con el tiempo
             self.virtual.add_front(pose, self.nav.robot_radius + 0.04, self.nav.robot_radius)
             self._log(t, f"atasco con frente libre: obstaculo bajo en ({pose[0]:.2f}, {pose[1]:.2f})")
@@ -317,9 +325,11 @@ class Lidar:
         self.data = None
         self.extra = None   # f(t, r, a) -> (r, a): une puntos extra (guardian de profundidad)
         self.last_t = 0.0
+        self.stamp = None   # header.stamp del ultimo scan (reloj del ROBOT), en s
         node.create_subscription(LaserScan, topic, self._on_scan, qos_profile_sensor_data)
 
     def _on_scan(self, msg):
+        self.stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         r = np.asarray(msg.ranges, np.float64)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment + self.rot
         self.data = nc.clean_scan(r, a, msg.range_min, msg.range_max)

@@ -178,17 +178,22 @@ _tb4_connect() {
 
   local found=0 used=""
   ros2 daemon stop >/dev/null 2>&1
-  if [ "$mode" != "peers" ]; then
-    found=$(_tb4_key_topics); used="multicast"
-    echo "[..]   descubrimiento multicast: $found/4 topicos clave"
-  fi
-  if [ "$found" -lt 4 ] && [ "$mode" != "multicast" ]; then
-    # Multicast ausente o parcial (habitual en WSL y redes con aislamiento): probar unicast.
+  if [ "$mode" != "multicast" ]; then
+    # Preferir unicast (ROS_STATIC_PEERS): en Wi-Fi el multicast se envia a tasa minima y satura la camara.
     export ROS_STATIC_PEERS="$ip"
-    local found_peers
-    found_peers=$(_tb4_key_topics)
-    echo "[..]   descubrimiento con ROS_STATIC_PEERS=$ip: $found_peers/4 topicos clave"
-    if [ "$found_peers" -ge "$found" ]; then found=$found_peers; used="peers"; fi
+    found=$(_tb4_key_topics); used="peers"
+    echo "[..]   descubrimiento con ROS_STATIC_PEERS=$ip: $found/4 topicos clave"
+  fi
+  if [ "$found" -lt 4 ] && [ "$mode" != "peers" ]; then
+    unset ROS_STATIC_PEERS
+    local found_mc
+    found_mc=$(_tb4_key_topics)
+    echo "[..]   descubrimiento multicast: $found_mc/4 topicos clave"
+    if [ "$found_mc" -gt "$found" ]; then
+      found=$found_mc; used="multicast"
+    elif [ "$used" = "peers" ]; then
+      export ROS_STATIC_PEERS="$ip"
+    fi
   fi
   [ "$used" = "multicast" ] && unset ROS_STATIC_PEERS
   export TB4_MODE="$used"

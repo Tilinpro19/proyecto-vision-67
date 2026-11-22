@@ -34,6 +34,7 @@ UMBRAL = 0.363        # coseno recomendado por OpenCV para SFace (misma persona 
 MARGEN = 0.04         # ventaja minima sobre el segundo para decir "seguro"
 SCORE_MIN = 0.6       # confianza minima de YuNet
 MIN_SIDE = 480        # imagenes mas chicas se agrandan (el preview del OAK-D mide 250 px)
+MAX_SIDE = 960        # imagenes muy grandes se reducen (fotos de celular) para acelerar YuNet
 TOP_FRAMES = 3        # se promedian los mejores frames
 
 
@@ -66,9 +67,13 @@ class Rostros:
 
     def detectar(self, img):
         h, w = img.shape[:2]
-        if max(h, w) < MIN_SIDE:
-            k = MIN_SIDE / max(h, w)
+        m = max(h, w)
+        if m < MIN_SIDE:
+            k = MIN_SIDE / m
             img = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_CUBIC)
+        elif m > MAX_SIDE:
+            k = MAX_SIDE / m
+            img = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA)
         h, w = img.shape[:2]
         self.det.setInputSize((w, h))
         _, faces = self.det.detect(img)
@@ -111,6 +116,7 @@ class Galeria:
                               if os.path.isdir(os.path.join(self.carpeta, d))
                               and not d.startswith((".", "_")))
         for i, nombre in enumerate(self.nombres):
+            aviso = False
             for path in sorted(glob.glob(os.path.join(self.carpeta, nombre, "*"))):
                 if not path.lower().endswith(IMG_EXT):
                     continue
@@ -119,6 +125,9 @@ class Galeria:
                     key = f"{os.path.relpath(path, self.carpeta)}|{st.st_mtime_ns}|{st.st_size}|{flip}"
                     e = cache.get(key)
                     if e is None:
+                        if not aviso:
+                            print(f"[galeria] procesando {nombre} ({i + 1}/{len(self.nombres)})...", flush=True)
+                            aviso = True
                         e = self._emb_archivo(path, flip)
                     if e is None:
                         if not flip:
@@ -189,6 +198,46 @@ def identificar(frames, rostros, galeria, umbral=UMBRAL, margen=MARGEN, top=TOP_
     return res
 
 
+def _norm_nombre(n):
+    """Compara nombres sin importar mayusculas ni espacio/guion bajo (Brigitte Rojas == brigitte_rojas)."""
+    return "_".join(str(n or "").lower().split()).replace("-", "_")
+
+
+def buscar_persona_en_frames(frames, rostros, galeria, objetivo, umbral=UMBRAL, margen=MARGEN, top=TOP_FRAMES):
+    """Revisa TODAS las caras detectadas una por una en cada frame (no solo la mayor).
+    Devuelve (Resultado, mejor_img, mejor_face) priorizando coincidencias con `objetivo`."""
+    obj_norm = _norm_nombre(objetivo)
+    hits_obj, hits_all = [], []
+    for f in frames:
+        if f is None:
+            continue
+        img, faces = rostros.detectar(f)
+        for face in faces:
+            q = calidad(img, face)
+            emb = rostros.embedding(img, face)
+            sims = galeria.similitudes(emb)
+            hits_all.append((q, img, face, sims))
+            if galeria.nombres:
+                order = np.argsort(-sims)
+                top_nombre = _norm_nombre(galeria.nombres[order[0]])
+                if obj_norm and top_nombre == obj_norm:
+                    hits_obj.append((q, img, face, sims))
+
+    res = Resultado(n_caras=len(hits_all))
+    if not hits_all or not galeria.nombres:
+        return res, None, None
+
+    grupo = hits_obj if hits_obj else hits_all
+    grupo.sort(key=lambda c: -c[0])
+    sims_mean = np.mean([c[3] for c in grupo[:top]], axis=0)
+    order = np.argsort(-sims_mean)
+    res.ranking = [(galeria.nombres[i], float(sims_mean[i])) for i in order]
+    res.nombre, res.score = res.ranking[0]
+    segundo = res.ranking[1][1] if len(order) > 1 else -1.0
+    res.seguro = res.score >= umbral and res.score - segundo >= margen
+    return res, grupo[0][1], grupo[0][2]
+
+
 # --- voz y anuncio ---------------------------------------------------------------
 
 _PS_VOZ = r"""
@@ -257,13 +306,21 @@ class Anunciador:
     """Imprime, publica en /nombre_reconocido (std_msgs/String) y lo dice en voz alta.
     Crearlo al arrancar: asi el publisher ya esta descubierto al anunciar."""
 
-    def __init__(self, node=None, topic="/nombre_reconocido", voz="auto"):
+    def __init__(self, node=None, topic="/nombre_reconocido", voz="auto",
+                 topic_foto="/persona_encontrada/image/compressed"):
         self.pub = None
+        self.img_pub = None
         self.audio_pub = None
         if node is not None:
             from std_msgs.msg import String
             self.String = String
             self.pub = node.create_publisher(String, topic, 10)
+            try:
+                from sensor_msgs.msg import CompressedImage
+                self.CompressedImage = CompressedImage
+                self.img_pub = node.create_publisher(CompressedImage, topic_foto, 10)
+            except Exception:
+                pass
             try:
                 from irobot_create_msgs.msg import AudioNoteVector, AudioNote
                 from builtin_interfaces.msg import Duration
@@ -298,6 +355,29 @@ class Anunciador:
                 pass
         if self.voz is not None:
             self.voz.decir(frase.format(legible))
+
+    def enviar_foto(self, nombre, img, face=None, score=0.0, carpeta=None):
+        """Guarda la foto de la persona encontrada en `evidencias/` y la publica por ROS 2."""
+        if img is None:
+            return None
+        destino = carpeta or os.path.join(HERE, "evidencias")
+        os.makedirs(destino, exist_ok=True)
+        seguro_nombre = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (nombre or "persona"))
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(destino, f"{seguro_nombre}_{stamp}.jpg")
+        out = img.copy()
+        if face is not None:
+            out = dibujar(out, np.asarray([face]), Resultado(nombre=nombre, score=score, seguro=True))
+        cv2.imwrite(path, out)
+        if self.img_pub is not None:
+            ok, buf = cv2.imencode(".jpg", out)
+            if ok:
+                msg = self.CompressedImage(format="jpeg", data=buf.tobytes())
+                for _ in range(3):
+                    self.img_pub.publish(msg)
+                    time.sleep(0.05)
+        print(f"[anuncio] foto guardada y enviada: {path}", flush=True)
+        return path
 
     def cerrar(self):
         if self.voz:

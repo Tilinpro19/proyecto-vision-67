@@ -1,6 +1,7 @@
 {
   "_nota": "Ajustes del dia de la competencia. Prioridad: cero colisiones. mision.py lo carga solo; '--param nombre=valor' gana sobre esto.",
   "safety_margin": 0.12,
+  "lateral_margin": 0.06,
   "max_linear": 0.22,
   "max_angular": 1.2,
   "max_accel": 0.5,

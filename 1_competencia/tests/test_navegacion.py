@@ -200,3 +200,40 @@ def test_obstaculo_bajo_y_bumper_no_caducan():
     assert n_bumper > 0
     piloto.virtual.prune_expired(1000.0, piloto.pp.virtual_ttl)
     assert len(piloto.virtual.points) == n_bumper
+
+
+def test_monitor_no_confunde_frenar_con_atascarse():
+    # Avanza a ~0.003 m/s (frena ante algo cercano): no es atasco a los 5 s ...
+    m = nc.ProgressMonitor(window=5.0, min_progress=0.08, window_wait=15.0)
+    assert not any(m.update(t * 0.1, (t * 0.0003, 0.0), 0.003) for t in range(140))
+    # ... pero si sigue asi 15 s se reposiciona, marcado como espera (sin barreras)
+    assert m.update(15.0, (0.0045, 0.0), 0.003)
+    assert m.motivo == "espera"
+
+
+def test_monitor_empujando_sin_moverse_sigue_siendo_atasco():
+    m = nc.ProgressMonitor(window=5.0, min_progress=0.08, window_wait=15.0)
+    assert not any(m.update(t * 0.1, (0.0, 0.0), 0.10) for t in range(50))
+    assert m.update(5.0, (0.0, 0.0), 0.10)
+    assert m.motivo == "empuja"
+
+
+def test_velocidad_usa_el_freno_mas_restrictivo_no_el_producto():
+    # Pasillo angosto (freno lateral) con un muro adelante (freno frontal): ambos activos a la vez.
+    # La velocidad debe ser max_linear * min(frontal, lateral), no el producto (frenaba doble).
+    import navegacion as nv
+    import nav_core as nc
+    from sim import corridor, scan_from
+    paredes = corridor(0.42, -0.42, 8.0) + [((1.0, -0.42), (1.0, 0.42))]
+    r, a = scan_from(paredes, (0.0, 0.0, 0.0))
+    pil = nv.Piloto(pp=nv.PilotoParams(max_linear=0.18))
+    pil.fijar_origen((0.0, 0.0, 0.0), r, a)
+    pil.meta = (3.0, 0.0)
+    for i in range(30):                       # 3 s: pasa la rampa de aceleracion, sin llegar al monitor de atasco
+        lin, ang, info = pil.paso(i * 0.1, (0.0, 0.0, 0.0), r, a)
+    rc, ac = nc.clean_scan(r, a, pil.nav.scan_min)
+    front = float(nc.free_distance(rc, ac, 0.0, pil.nav)[0])
+    k = min(max((front - pil.nav.stop_dist) / (pil.nav.slow_dist - pil.nav.stop_dist), 0.0), 1.0)
+    s = nc.side_scale(rc, ac, pil.nav)
+    assert 0.18 * min(k, s) > 0.18 * k * s + 0.02      # el escenario realmente distingue min de producto
+    assert abs(lin - 0.18 * min(k, s)) < 0.01, (lin, k, s)

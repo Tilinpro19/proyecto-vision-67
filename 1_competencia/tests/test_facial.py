@@ -85,3 +85,19 @@ def test_cache_de_galeria(tmp_path, rostros):
     assert (tmp_path / ".cache.npz").exists()
     gal = facial.Galeria(rostros, str(tmp_path))       # segunda carga: desde cache
     assert len(gal.embs) == 2 and gal.nombres == ["Lena"]
+
+
+def test_buscar_persona_revisa_todas_las_caras_una_por_una(tmp_path, rostros):
+    gal = make_gallery(tmp_path, {"Lena": ["lena.jpg"], "Messi": ["messi5.jpg"]}, rostros)
+    lena_chica = cv2.resize(img("lena.jpg"), (240, 240))
+    messi_grande = cv2.resize(img("messi5.jpg"), (480, 480))
+    fondo = np.zeros((480, 740, 3), np.uint8)
+    fondo[120:360, 0:240] = lena_chica
+    fondo[:, 260:740] = messi_grande
+
+    res, foto_img, foto_face = facial.buscar_persona_en_frames([fondo], rostros, gal, "Lena")
+    assert res.nombre == "Lena" and res.n_caras >= 2
+    assert foto_img is not None and foto_face is not None
+    # La caja devuelta debe corresponder a la mitad izquierda (Lena), no a Messi
+    assert float(foto_face[0]) < 260
+
