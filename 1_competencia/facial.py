@@ -34,6 +34,7 @@ UMBRAL = 0.363        # coseno recomendado por OpenCV para SFace (misma persona 
 MARGEN = 0.04         # ventaja minima sobre el segundo para decir "seguro"
 SCORE_MIN = 0.6       # confianza minima de YuNet
 MIN_SIDE = 480        # imagenes mas chicas se agrandan (el preview del OAK-D mide 250 px)
+MAX_SIDE = 960        # fotos de celular (3000+ px) se achican: YuNet falla con caras enormes
 TOP_FRAMES = 3        # se promedian los mejores frames
 
 
@@ -69,6 +70,9 @@ class Rostros:
         if max(h, w) < MIN_SIDE:
             k = MIN_SIDE / max(h, w)
             img = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_CUBIC)
+        elif max(h, w) > MAX_SIDE:
+            k = MAX_SIDE / max(h, w)
+            img = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA)
         h, w = img.shape[:2]
         self.det.setInputSize((w, h))
         _, faces = self.det.detect(img)
