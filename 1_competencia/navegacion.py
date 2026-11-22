@@ -160,7 +160,9 @@ class Piloto:
             # no avanzar mientras se gira; girar en el sitio hasta despejar el frente.
             eff_free = min(free, info["front"])
             lin, ang = nc.speed_command(h, eff_free, pp.max_linear, pp.max_angular, nav)
-            lin *= nc.side_scale(r, a, nav)   # mas despacio con poca holgura lateral
+            # Poca holgura lateral limita la velocidad, pero sin multiplicarse con el freno frontal:
+            # cada freno ya cubre su riesgo, el producto frenaba dos veces por lo mismo.
+            lin = min(lin, pp.max_linear * nc.side_scale(r, a, nav))
 
             # Reduccion suave muy cerca de la meta final (ultimos 40 cm) para no pasarse
             if dist < 0.40 and not self.escape:
@@ -312,9 +314,11 @@ class Lidar:
         self.data = None
         self.extra = None   # f(t, r, a) -> (r, a): une puntos extra (guardian de profundidad)
         self.last_t = 0.0
+        self.stamp = None   # header.stamp del ultimo scan (reloj del ROBOT), en s
         node.create_subscription(LaserScan, topic, self._on_scan, qos_profile_sensor_data)
 
     def _on_scan(self, msg):
+        self.stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         r = np.asarray(msg.ranges, np.float64)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment + self.rot
         self.data = nc.clean_scan(r, a, msg.range_min, msg.range_max)

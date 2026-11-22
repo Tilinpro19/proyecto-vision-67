@@ -30,6 +30,7 @@ import numpy as np
 class NavParams:
     robot_radius: float = 0.17   # m   TB4 Lite (base Create 3, ~0.34 m de diametro)
     safety_margin: float = 0.09  # m   se suma al radio al inflar (choque = penalidad)
+    lateral_margin: float = 0.06 # m   holgura LATERAL dura sobre el radio (al frente rige safety_margin)
     max_range: float = 3.0       # m   mas lejos que esto cuenta como "libre"
     n_headings: int = 73         # rumbos candidatos de -180 a +180 (cada 5 grados)
     min_free: float = 0.45       # m   un rumbo es admisible si deja avanzar al menos esto
@@ -97,11 +98,15 @@ def free_distance(ranges, angles, bearings, p=NavParams()):
     if len(ranges) == 0:
         return np.full(len(bearings), p.max_range)
     fwd, lat = _project(ranges, angles, bearings)
+    # Elipse: margen completo AL FRENTE (R, para frenar a tiempo) pero solo `lateral_margin`
+    # de holgura LATERAL (Rl). Con el disco inflado una pared paralela a < inflate (carton a 0.25 m,
+    # inflate 0.31) bloqueaba todos los rumbos (free=0, sin opciones) aunque el robot cabia.
+    # La holgura lateral "blanda" la dan side_margin (costo), wall_repulsion y side_scale.
     R = p.inflate
+    Rl = min(R, p.robot_radius + p.lateral_margin)
     # solo puntos por delante: alejarse de algo que ya esta muy cerca debe estar permitido
-    hit = (np.abs(lat) < R) & (fwd > 0)
-    # punto en el camino: el disco lo toca cuando su centro llega a fwd - sqrt(R^2 - lat^2)
-    contact = fwd - np.sqrt(np.maximum(R * R - lat * lat, 0.0))
+    hit = (np.abs(lat) < Rl) & (fwd > 0)
+    contact = fwd - R * np.sqrt(np.maximum(1.0 - (lat / Rl) ** 2, 0.0))
     contact = np.where(hit, contact, np.inf)
     return np.clip(contact.min(axis=1), 0.0, p.max_range)
 

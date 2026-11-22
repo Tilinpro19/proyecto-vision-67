@@ -302,6 +302,8 @@ class RobotCamera:
         self._espera_clave = True
         self._cola = deque()
         self._hay = threading.Event()
+        self._lock = threading.Lock()
+        self._visor_stop = threading.Event()
         self.reanudar()
 
     def reanudar(self):
@@ -364,12 +366,14 @@ class RobotCamera:
         control. 'texto' devuelve la linea a superponer. 'analizar(img)' (opcional) devuelve cajas
         [(x, y, w, h, etiqueta, (b, g, r))] con x,y,w,h NORMALIZADOS 0..1; corre en otro hilo a
         'hz' Hz y el visor dibuja las ultimas (se descartan si tienen >0.8 s)."""
+        self._visor_stop.clear()
         cajas = [0.0, []]
 
         def _analisis():
             ult = 0.0
-            while True:
-                time.sleep(1.0 / hz)
+            while not self._visor_stop.is_set():
+                if self._visor_stop.wait(1.0 / hz):
+                    break
                 img = self.img
                 if img is None or self.last_t == ult:
                     continue
@@ -378,11 +382,13 @@ class RobotCamera:
                     cajas[:] = [time.monotonic(), analizar(img)]
                 except Exception as e:
                     print(f"[visor] analisis fallo: {e}", flush=True)
-                    time.sleep(2.0)
+                    self._visor_stop.wait(2.0)
 
         def _run():
             ult = 0.0
-            while True:
+            while not self._visor_stop.is_set():
+                if not self.h264 and self.msg is not None:
+                    self.latest()
                 if self.last_t == ult:
                     time.sleep(0.005)
                     continue
@@ -405,18 +411,28 @@ class RobotCamera:
                     cv2.putText(img, texto(), (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                 cv2.imshow(titulo, img)
                 cv2.waitKey(1)
+            try:
+                cv2.destroyWindow(titulo)
+            except Exception:
+                pass
         if analizar:
             threading.Thread(target=_analisis, daemon=True).start()
         threading.Thread(target=_run, daemon=True).start()
 
+    def cerrar_visor(self):
+        """Detiene los hilos del visor si estaban activos."""
+        self._visor_stop.set()
+
     def latest(self):
         """Decodifica la imagen nueva (si llego) y devuelve la ultima valida o None."""
-        if self.msg is not None:
-            img = cv2.imdecode(np.frombuffer(bytes(self.msg.data), np.uint8), cv2.IMREAD_COLOR)
-            self.msg = None
-            if img is not None:  # None = JPEG corrupto (paquete perdido por Wi-Fi)
-                self.img, self.last_t = img, time.monotonic()
-        return self.img
+        with self._lock:
+            msg = self.msg
+            if msg is not None:
+                self.msg = None
+                img = cv2.imdecode(np.frombuffer(bytes(msg.data), np.uint8), cv2.IMREAD_COLOR)
+                if img is not None:  # None = JPEG corrupto (paquete perdido por Wi-Fi)
+                    self.img, self.last_t = img, time.monotonic()
+            return self.img
 
 
 def fit_height(img, height):

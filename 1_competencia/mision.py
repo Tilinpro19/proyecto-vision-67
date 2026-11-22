@@ -19,6 +19,7 @@ superar t_max, o (Tarea B) puno cerrado = desarmar.
 import argparse
 import json
 import math
+from collections import deque
 import os
 import time
 from dataclasses import asdict, dataclass
@@ -57,6 +58,7 @@ class MisionParams:
     bandera_frames: int = 2               # frames seguidos con bandera para confirmar llegada a B
     depth_guard: bool = False             # guardian de profundidad OAK-D (bajo demanda; ver profundidad.py).
                                           # Apagado: en la 1a prueba real dejo al robot atascado; activar con --param depth_guard=1
+    reloj_max_desfase: float = 30.0       # s max entre la hora del PC y la del robot al arrancar (0 = no comprobar)
     senal_cerca_alto: float = 0.14        # alto de la flecha / alto de imagen para considerarla "cerca" (punto de decision)
     inicio_min_dist: float = 0.30         # m recorridos (o 6 s) antes de tomar la 1a decision en el arranque
     cam_periodo: float = 0.20             # s entre lecturas de senales en modo guiado (ahorro CPU Pi)
@@ -595,6 +597,7 @@ class Sistema:
         try:
             self.sender.stop()
         finally:
+            self.cam.cerrar_visor()
             if self.guardian is not None:
                 self.guardian.cerrar()
             self.anunciador.cerrar()
@@ -610,6 +613,25 @@ def esperar_sensores(s, m, timeout=20.0):
             if s.cam.latest() is None:
                 m.evento("AVISO: aun no llega la camara del robot")
             return True
+    return False
+
+
+def desfase_reloj(stamp, ahora):
+    """Segundos que el reloj del robot (sello del /scan) va por detras (+) o delante (-) del PC;
+    None si no hay sello."""
+    return None if stamp is None else ahora - stamp
+
+
+def reloj_ok(s, m, max_desfase):
+    """False (y avisa) si la hora del robot difiere del PC mas de max_desfase s. Una Pi sin NTP vuelve a
+    una fecha vieja y rompe TF/SLAM; con max_desfase=0 no se comprueba."""
+    if not max_desfase:
+        return True
+    d = desfase_reloj(getattr(s.lidar, "stamp", None), time.time())
+    if d is None or abs(d) <= max_desfase:
+        return True
+    m.evento(f"RELOJ: el robot va {d:+.0f} s respecto al PC (limite {max_desfase:.0f} s). Sincroniza la hora "
+             "(configurar_sync_automatico.sh / chequeo_reloj_tb4.py) o ignora con --param reloj_max_desfase=0")
     return False
 
 
@@ -722,6 +744,8 @@ def tarea_a(args, s, m, piloto):
         time.sleep(mp.cuenta)
     piloto.ir_a(args.goal)
     m.ir(IR_A_B, f"B = ({args.goal[0]:.2f}, {args.goal[1]:.2f})")
+    if args.ver:   # ventana en su propio hilo para no frenar el bucle de control
+        s.cam.visor("mision A", texto=lambda: f"{m.estado} {m.tiempo():.1f}s")
     escaneo, t_vista, vista = None, 0.0, 0.0
     while m.activa():
         s.spin(1.0 / mp.rate)
@@ -729,9 +753,8 @@ def tarea_a(args, s, m, piloto):
         if not comunes(s, m, cont, t, piloto):
             continue
         _volcar_eventos_piloto(s, m, piloto)
-        # La camara solo se decodifica cuando hace falta (en la Pi cada JPEG cuesta CPU que
-        # el LiDAR y el control necesitan): al escanear, con --ver, o si la llegada usa la foto.
-        img = s.frame_nuevo() if (m.estado == ESCANEAR or args.ver
+        # La camara solo se decodifica en el bucle de control cuando hace falta (el visor tiene su propio hilo).
+        img = s.frame_nuevo() if (m.estado == ESCANEAR
                                   or (m.estado == IR_A_B and mp.llegada != "distancia")) else None
         if m.estado == IR_A_B:
             t_p = m.perfil.reloj()
@@ -767,11 +790,6 @@ def tarea_a(args, s, m, piloto):
         elif m.estado == ANUNCIAR:
             s.sender.stop()
             _completar_anuncio(s, m)
-        if args.ver and img is not None:
-            cv2.putText(img, f"{m.estado} {m.tiempo():.1f}s", (5, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.imshow("mision A", img)
-            cv2.waitKey(1)
 
 
 class PilotoGuiado:
@@ -810,6 +828,7 @@ class PilotoGuiado:
         self.min_dist_cruce = 0.85
         self.senal_cerca = False
         self._t0 = None
+        self._hist_nav = deque(maxlen=2)   # tipo de flecha/prohibido visto en los 2 ultimos cuadros
 
     def iniciar(self, odom_pose, ranges, angles):
         self.piloto.fijar_origen(odom_pose, ranges, angles)
@@ -844,6 +863,10 @@ class PilotoGuiado:
         la llegada a B por bandera (`bandera_frames` seguidos)."""
         vio_bandera = False
         tomo_nav = False
+        # Debounce: una flecha/prohibido solo cuenta si sale igual en 2 cuadros CONSECUTIVOS
+        # (el detector parpadeaba izq/der con confianza ~0.6 y el robot "dudaba").
+        vistas_nav = [x for x in (senales_vistas or ()) if x.tipo in ("izq", "der", "prohibido")]
+        self._hist_nav.append(vistas_nav[0].tipo if vistas_nav else None)
         for s in senales_vistas or ():
             if s.tipo == "qr":
                 if self.mp.senal_qr == "registrar" and mision is not None and s.texto not in mision.hitos_qr:
@@ -852,7 +875,7 @@ class PilotoGuiado:
                     mision.evento(f"hito QR registrado: {s.texto}")
             elif s.tipo == "bandera":
                 vio_bandera = True
-            elif s.tipo in ("izq", "der", "prohibido") and not tomo_nav:
+            elif s.tipo in ("izq", "der", "prohibido") and not tomo_nav and list(self._hist_nav) == [s.tipo, s.tipo]:
                 # detectar() ordena de mayor a menor area: priorizar la senal mas cercana
                 tomo_nav = True
                 prev = getattr(self.senal_pendiente, "tipo", None)
@@ -1285,6 +1308,8 @@ def main():
         s = Sistema(args, mp)
         if not esperar_sensores(s, m):
             raise SystemExit("No llegan /scan y /odom: revisa la conexion (tb4_check.sh).")
+        if not reloj_ok(s, m, mp.reloj_max_desfase):
+            raise SystemExit("Hora del robot desfasada: sincronizala antes de correr (ver aviso RELOJ arriba).")
         if args.tarea == "A":
             if args.modo == "guiado" or (args.modo == "auto" and args.goal is None):
                 tarea_a_guiada(args, s, m, piloto)

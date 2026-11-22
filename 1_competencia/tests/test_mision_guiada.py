@@ -154,7 +154,8 @@ def test_mision_guiada_dos_senales_en_mismo_frame_prioriza_la_mas_cercana():
         Senal("izq", 0.88, (80, 80, 90, 90)),   # mas grande / cercana (primera en detectar())
         Senal("der", 0.92, (200, 120, 30, 30)), # mas pequena / lejana
     ]
-    assert guiado.registrar_senales(1.0, senales, m) is False
+    assert guiado.registrar_senales(0.8, senales, m) is False
+    assert guiado.registrar_senales(1.0, senales, m) is False   # 2 cuadros consecutivos (debounce)
     assert guiado.senal_pendiente is not None
     assert guiado.senal_pendiente.tipo == "izq"
 
@@ -393,7 +394,38 @@ def test_mision_guiada_flecha_izq_se_obedece_con_lateral_de_0_6_m():
     m = ms.Mision("A", quiet=True)
     m.ir(ms.SEGUIR)
     sen = Senal(tipo="izq", confianza=0.8, bbox=(100, 100, 60, 80))
-    guiado.registrar_senales(5.0, [sen], m, alto_img=360)    # 80/360 = 0.22 >= 0.14: flecha cercana
+    guiado.registrar_senales(4.8, [sen], m, alto_img=360)
+    guiado.registrar_senales(5.0, [sen], m, alto_img=360)    # 2 cuadros; 80/360 = 0.22 >= 0.14: flecha cercana
     assert guiado.senal_cerca
     guiado.paso(10.0, (1.5, 0.0, 0.0), r, a, mision=m)
     assert m.decisiones and m.decisiones[-1]["accion"] == "izq"
+
+
+def test_flecha_parpadeante_no_se_registra_pero_la_estable_si():
+    from senales_forma import Senal
+    g = ms.PilotoGuiado(mp=ms.MisionParams())
+    izq = Senal(tipo="izq", confianza=0.7, bbox=(0, 0, 40, 40))
+    der = Senal(tipo="der", confianza=0.6, bbox=(0, 0, 40, 40))
+    for i, s in enumerate([izq, der, izq, der, izq, der]):   # alterna cada cuadro: nunca 2 consecutivos iguales
+        g.registrar_senales(float(i), [s])
+    assert g.senal_pendiente is None
+    g.registrar_senales(7.0, [der])
+    g.registrar_senales(8.0, [der])
+    assert g.senal_pendiente is not None and g.senal_pendiente.tipo == "der"
+
+
+def test_desfase_reloj_avisa_si_la_pi_va_atrasada():
+    class S:  # stub minimo de Sistema
+        class lidar:
+            stamp = 1000.0
+    m = ms.Mision("A", quiet=True)
+    assert ms.desfase_reloj(None, 5.0) is None
+    assert ms.reloj_ok(S, m, 0)                       # 0 = desactivado
+    orig = ms.time.time
+    try:
+        ms.time.time = lambda: 1000.5
+        assert ms.reloj_ok(S, m, 2.0)                 # 0.5 s: bien
+        ms.time.time = lambda: 1000.0 + 16.7 * 3600   # Pi 16.7 h atrasada (caso real)
+        assert not ms.reloj_ok(S, m, 2.0)
+    finally:
+        ms.time.time = orig
