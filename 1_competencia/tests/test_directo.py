@@ -463,3 +463,43 @@ def test_lidar_atrasado_03s_sin_choques_y_vuelve_a_a(v):
     assert res["collisions"] == 0
     assert res["min_clear"] > ms.MisionParams().choque_dist
     assert math.hypot(*res["true"][:2]) < 0.45
+
+
+# --- tramo final del video de referencia (grupo Carranza, 00:59-01:05) -------------------
+
+def _tramo_final(salida_izq):
+    """Pasillo de 0.8 m hasta la bandera en x=4.0; caja con PROHIBIDO en la pared izquierda
+    (x=3.0, mirando al pasillo). Con salida_izq hay un hueco a la izquierda en x=1.6..2.4."""
+    h = 0.4
+    izq = ([((-0.5, h), (1.6, h)), ((1.6, h), (1.6, 2.0)), ((1.6, 2.0), (2.4, 2.0)),
+            ((2.4, 2.0), (2.4, h)), ((2.4, h), (4.0, h))] if salida_izq
+           else [((-0.5, h), (4.0, h))])
+    return izq + [((-0.5, -h), (4.0, -h)), ((-0.5, -h), (-0.5, h)), ((4.0, -h), (4.0, h))]
+
+
+OBJ_FINAL = [("prohibido", (3.0, 0.4), DER_Y), ("bandera", (4.0, 0.1), IZQ_X),
+             ("cara", (4.0, -0.15), IZQ_X)]
+
+
+@pytest.mark.parametrize("salida_izq", [False, True])
+def test_prohibido_lateral_antes_de_la_bandera_no_desvia(salida_izq):
+    res = simular_directo(_tramo_final(salida_izq), OBJ_FINAL, t_max=120.0)
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist
+    d = res["d"]
+    assert not any(x["senal"] == "prohibido" for x in d.decisiones), d.decisiones
+    assert res["b_true"][0] > 3.0, res["b_true"]          # llego al fondo, junto a la bandera
+
+
+@pytest.mark.parametrize("salida_izq", [False, True])
+def test_prohibido_lateral_sin_bandera_a_la_vista_se_ignora_por_posicion(salida_izq):
+    # sin la regla "bandera en el mismo cuadro": solo el filtro por posicion lateral
+    objetos = [o for o in OBJ_FINAL if o[0] != "bandera"]
+    res = simular_directo(_tramo_final(salida_izq), objetos, t_max=120.0)
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    d = res["d"]
+    assert not any(x["senal"] == "prohibido" for x in d.decisiones), d.decisiones
+    assert res["b_true"][0] > 3.0, res["b_true"]
+    assert any("prohibido lateral" in e for e in d.eventos), d.eventos
