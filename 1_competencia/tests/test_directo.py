@@ -618,3 +618,45 @@ def test_flecha_roja_se_ignora_por_defecto(politica):
         assert any("flecha ROJA" in e for e in d.eventos), d.eventos
     else:
         assert d.decisiones[0]["senal"] == "izq" and d.decisiones[0]["accion"] == "izq"
+
+
+# --- callejon APARENTE: no rendirse, usar la camara y rodear -------------------------------
+
+def _caja_en_el_fondo(sale, ancho=0.80):
+    """Cruce _cruz con una caja que sobresale `sale` m de la pared del fondo (la flecha va en
+    la caja, como en el video). Las salidas quedan a los costados de la caja, un poco adelante."""
+    from sim import box
+    return _cruz(ancho) + box(3.0 - sale / 2, 0.0, sale, 0.36)
+
+
+@pytest.mark.parametrize("sale", [0.20, 0.35])
+@pytest.mark.parametrize("flecha", [True, False])
+def test_caja_que_sobresale_no_es_callejon(sale, flecha):
+    # antes: "callejon sin salidas" -> mirar -> media vuelta (3 veces) y nunca llegaba a las caras
+    objetos = ([("izq", (3.0 - sale, 0.0), IZQ_X)] if flecha else []) + [("cara", (2.6, 2.4), (0.0, -1.0))]
+    res = simular_directo(_caja_en_el_fondo(sale), objetos, t_max=150.0)
+    d = res["d"]
+    assert res["ok"] and res["collisions"] == 0, d.eventos
+    assert d.callejones == 0, d.eventos
+    assert res["b_true"][1] > 0.6, res["b_true"]          # llego por la rama izquierda
+    assert d.decisiones[0]["accion"] == "izq"
+    if sale >= 0.35:
+        assert any("callejon aparente" in e for e in d.eventos), d.eventos
+
+
+def test_callejon_de_verdad_no_se_rescata():
+    paredes = [((-0.5, -0.4), (-0.5, 0.4)), ((-0.5, 0.4), (3.0, 0.4)), ((-0.5, -0.4), (3.0, -0.4)),
+               ((3.0, -0.4), (3.0, 0.4))]
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    sim = Sim(paredes)
+    d.iniciar(sim.odom, *sim.scan())
+    t = 0.0
+    while t < 40.0 and not d.decisiones:
+        r, a = sim.scan()
+        d.ver_senales(t, ver(sim.true, [("izq", (3.0, 0.0), IZQ_X)], paredes)[0], ANCHO, sim.odom, r, a)
+        lin, ang, _ = d.paso(t, sim.odom, r, a)
+        sim.step(lin, ang, 0.1)
+        t += 0.1
+    assert d.decisiones[0]["accion"] == "retroceder" and d.estado == dr.MIRAR
+    assert not any("callejon aparente" in e for e in d.eventos)
