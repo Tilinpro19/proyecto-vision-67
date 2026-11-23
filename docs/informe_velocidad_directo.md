@@ -213,7 +213,15 @@ Son 17.6 m de ida por el centro del pasillo y 7 decisiones. Se probó a 0.55, 0.
 - **Resultado:** con la caja sobresaliendo 0.2 y 0.35 m, con y sin flecha, llega a las caras
   con **0 callejones** y 0 choques. Si sobresale 0.45 m o más, el hueco entre caja y pared queda
   en 0.41 m para un robot de 0.34 m; el VFH no se mete y el robot vuelve, igual que antes.
-- **Tests:** `test_caja_que_sobresale_no_es_callejon` (4 casos) y
+- **El regreso también fallaba** (commit `8bc7529`). Lo encontró la grabación en condiciones
+  duras: de vuelta, el piloto por migas usaba los márgenes completos de `config.json` y quedaba
+  trabado en el mismo hueco que la ida había pasado con margen chico. Solo 2 de 6 corridas (3
+  perfiles × 2 derivas) volvían a A. Ahora, a menos de 1 m de un punto de rescate, el regreso
+  usa el margen chico y va a `v_estrecho`: **6 de 6 vuelven**, con 0 choques. Pero el regreso
+  por ahí es **lento** (34 a 174 s en total según la corrida) y **justo**: la holgura mínima
+  llega a 0.205 m del centro con el agresivo, unos 3.5 cm de la carrocería. Queda para mejorar.
+- **Tests:** `test_caja_que_sobresale_no_es_callejon` (4 casos),
+  `test_caja_que_sobresale_vuelve_a_a_en_condiciones_duras` (3 perfiles) y
   `test_callejon_de_verdad_no_se_rescata`. Los de callejón con y sin caras siguen pasando, y el
   circuito del video queda igual (0 callejones).
 
@@ -384,5 +392,5 @@ Si hay un choque o un roce, volver al perfil anterior.
 | `1_competencia/tests/camara_sim.py` | resolución, FOV, alcance por tipo y pérdida de cuadros |
 | `docs/bench_directo.csv` | resultados completos: perfil × escenario × condición |
 
-Tests: **326 pasan** y 1 se salta (`pytest 1_competencia/tests`). `test_scans_reales` necesita `tests/scans_reales/`, que no está
+Tests: **329 pasan** y 1 se salta (`pytest 1_competencia/tests`). `test_scans_reales` necesita `tests/scans_reales/`, que no está
 versionado: copiarlo del worktree `guiado-directo`.

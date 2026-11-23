@@ -17,7 +17,7 @@ import directo as dr  # noqa: E402
 import test_directo as T  # noqa: E402
 from ver_simulacion import PISTAS  # noqa: E402
 
-RAYOS = 120     # LiDAR reducido a 1 rayo cada 3 grados
+RAYOS = 90      # LiDAR reducido a 1 rayo cada 4 grados (sim.json < 16 MB)
 
 ESCENARIOS = [
     ("zigzag", "Zigzag con flechas", "zigzag", {}),
