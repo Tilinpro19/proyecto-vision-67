@@ -266,14 +266,31 @@ def _es_bandera(gray_crop):
     return _eval_bw_bandera(bw_ad)
 
 
+# Senales nuevas ("Copia de senales.docx"): flechas en circulo AZUL con borde y flecha negros.
+# El azul se pasa a blanco: la senal queda igual a la version blanco y negro (anillo negro,
+# interior claro, flecha negra) y sirven las mismas plantillas. Imagenes en B/N: sin cambio.
+AZUL_H = (90, 135)      # tono OpenCV (0-179); el azul de la hoja (0, 112, 192) RGB ~ 103
+AZUL_S_MIN = 70         # saturacion minima (la camara apaga el color con poca luz)
+AZUL_V_MIN = 50
+
+
 def _a_gris(img):
     if img.ndim == 2:
         return img
     if img.shape[2] == 4:
         alpha = img[:, :, 3:4].astype(np.float32) / 255.0
-        bgr = (img[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = (img[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, sat, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    azul = (h >= AZUL_H[0]) & (h <= AZUL_H[1]) & (sat >= AZUL_S_MIN) & (v >= AZUL_V_MIN)
+    if np.any(azul):
+        gray = gray.copy()
+        # al nivel del papel de ESTA imagen (con poca luz el papel queda gris, no 255; un azul
+        # mas blanco que el papel haria ver "oscuras" las esquinas de la hoja)
+        resto = gray[~azul]
+        gray[azul] = int(np.percentile(resto, 98)) if resto.size else 255
+    return gray
 
 
 def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
@@ -400,7 +417,7 @@ def buscar_candidatos(img, area_min_frac=0.0015):
     con alto contraste local blanco/negro que justifican correr `detectar()` o pedir alta resolucion."""
     if img is None or img.size == 0:
         return []
-    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = _a_gris(img)     # azul -> papel: la flecha azul queda como la de blanco y negro
     H, W = gray.shape[:2]
     blur = cv2.GaussianBlur(gray, (3, 3), 0.8)
     blk = max(15, (min(H, W) // 6) | 1)
