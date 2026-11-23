@@ -94,6 +94,7 @@ class DirectoParams:
     # Prohibido pegado en una pared/caja LATERAL (video de referencia: justo antes de la bandera)
     # no cierra el camino de frente: solo cuenta si queda cerca del eje del pasillo.
     prohibido_borde: float = 0.15  # m  lateral > max(0.15, ancho/2 - esto) -> lateral, se ignora
+    lateral_antes_frente: float = 0.30  # m  ...y a mas de esto antes de la pared del frente
     flechas_solo_frente: bool = True  # el mismo filtro para flechas (video: flecha impresa en una caja lateral)
     # Tras cada giro: rumbo de la odometria corregido UNA vez con las dos paredes del pasillo
     # (en 0.57 m, 10-15 grados de deriva tras la media vuelta dejan al robot contra una pared)
@@ -221,7 +222,10 @@ class PilotoDirecto:
         pose = self.piloto.pose(odom_pose)
         r, a = nc.clean_scan(ranges, angles, self.piloto.nav.scan_min)
         vio_bandera, nav_tomada = False, False
-        hay_bandera = any(s.tipo == "bandera" for s in senales or ())
+        # bandera CERCA en el mismo cuadro: manda sobre un prohibido (de lejos puede ser un
+        # falso positivo, p. ej. un codigo de barras en una caja)
+        hay_bandera = any(s.tipo == "bandera" and (self._rango_senal(s, ancho_img, r, a) or math.inf)
+                          <= self.dp.d_bandera + 1.0 for s in senales or ())
         for s in senales or ():
             if s.tipo == "qr":
                 if s.texto and s.texto not in self.qrs:
@@ -649,19 +653,25 @@ class PilotoDirecto:
         return d if d is not None else getattr(s, "distancia_m", None)
 
     def _prohibido_lateral(self, s, ancho, pose, r, a):
-        """True si la senal (prohibido o flecha) esta a un costado del eje del pasillo."""
+        """True si la senal (prohibido o flecha) esta pegada a un COSTADO del pasillo: corrida
+        del eje Y claramente antes de la pared del frente (LiDAR por el rumbo del pasillo).
+        Una senal en la pared/caja del fondo, aunque este descentrada, NO es lateral."""
         b = self._rumbo_senal(s, ancho)
         d = self._rango_senal(s, ancho, r, a)
         if d is None:
             return False         # sin rango no se puede ubicar: se trata como antes
-        lat = d * math.sin(nc.wrap(pose[2] + b - self.rumbo))   # respecto del rumbo del pasillo
+        rel = nc.wrap(pose[2] + b - self.rumbo)          # respecto del rumbo del pasillo
+        lat, adelante = d * math.sin(rel), d * math.cos(rel)
         limite = max(0.15, 0.5 * self.ancho - self.dp.prohibido_borde)
-        if abs(lat) <= limite:
+        frente = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(4.0))
+        frente = math.inf if frente is None else frente
+        if abs(lat) <= limite or adelante >= frente - self.dp.lateral_antes_frente:
             return False
         clave = (round(pose[0] + d * math.cos(pose[2] + b), 1), round(pose[1] + d * math.sin(pose[2] + b), 1))
         if clave not in self._prohibidos_lat:
             self._prohibidos_lat.add(clave)
-            self.eventos.append(f"{s.tipo} lateral ignorado: a {lat:+.2f} m del eje (limite {limite:.2f})")
+            self.eventos.append(f"{s.tipo} lateral ignorado: a {lat:+.2f} m del eje y {frente - adelante:.2f} m "
+                                f"antes del frente")
         return True
 
     def _leer_flecha(self, s, ancho, pose, r, a):

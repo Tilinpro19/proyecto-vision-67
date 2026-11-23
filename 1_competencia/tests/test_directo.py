@@ -54,7 +54,8 @@ def _piloto_config():
     return piloto, mp, dp
 
 
-def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_extra=None, scan_retardo=0):
+def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_extra=None, scan_retardo=0,
+                    sesgo_px=0):
     sim = Sim(paredes, yaw_drift=yaw_drift, scan_retardo=scan_retardo)
     piloto, mp, dp = _piloto_config()
     for k, v in (dp_extra or {}).items():
@@ -68,6 +69,9 @@ def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_ext
             if t - t_cam >= mp.cam_periodo:
                 t_cam = t
                 senales, cara = ver(sim.true, objetos, paredes)
+                if sesgo_px:
+                    senales = [Senal(x.tipo, x.confianza, (x.bbox[0] + sesgo_px, *x.bbox[1:]),
+                                     texto=x.texto, distancia_m=x.distancia_m) for x in senales]
                 d.ver_caras(t, cara)
                 d.ver_senales(t, senales, ANCHO, sim.odom, r, a)
             lin, ang, info = d.paso(t, sim.odom, r, a)
@@ -543,3 +547,43 @@ def test_flecha_impresa_en_caja_lateral_no_desvia(filtro):
     else:
         # sin el filtro la flecha falsa se confirma (asi era antes)
         assert any("flecha confirmada: izq" in e for e in d.eventos), d.eventos
+
+
+# --- el filtro lateral NO debe rechazar senales reales del fondo -------------------------
+
+def _cruz(ancho, largo=3.0, brazo=2.0):
+    """Pasillo de `ancho` hasta una pared en x=largo con salidas a izquierda y derecha justo
+    antes del fondo (x = largo-ancho .. largo)."""
+    h, x0 = ancho / 2.0, largo - ancho
+    return [((-0.5, -h), (-0.5, h)), ((-0.5, h), (x0, h)), ((-0.5, -h), (x0, -h)),
+            ((x0, h), (x0, h + brazo)), ((largo, h), (largo, h + brazo)), ((x0, h + brazo), (largo, h + brazo)),
+            ((x0, -h), (x0, -h - brazo)), ((largo, -h), (largo, -h - brazo)), ((x0, -h - brazo), (largo, -h - brazo)),
+            ((largo, -h), (largo, h))]
+
+
+@pytest.mark.parametrize("ancho", [0.56, 0.80])
+@pytest.mark.parametrize("lado", [1.0, -1.0])
+@pytest.mark.parametrize("tipo", ["izq", "der"])
+def test_flecha_descentrada_en_la_pared_del_fondo_se_obedece(ancho, lado, tipo):
+    h, largo = ancho / 2.0, 3.0
+    yb = (h + 1.0) if tipo == "izq" else -(h + 1.0)
+    objetos = [(tipo, (largo, lado * (h - 0.08)), IZQ_X), ("cara", (largo - ancho / 2, yb + (1.0 if yb > 0 else -1.0)), (0.0, -1.0 if yb > 0 else 1.0))]
+    res = simular_directo(_cruz(ancho), objetos, t_max=120.0)
+    d = res["d"]
+    assert d.decisiones and d.decisiones[0]["senal"] == tipo and d.decisiones[0]["accion"] == tipo, (d.decisiones, d.eventos)
+    assert res["collisions"] == 0
+    assert not any("lateral ignorado" in e for e in d.eventos), d.eventos
+
+
+@pytest.mark.parametrize("sesgo", [30, -30])
+def test_prohibido_al_fondo_con_sesgo_de_camara_se_obedece(sesgo):
+    paredes = [
+        ((-0.8, -0.6), (-0.8, 0.6)), ((-0.8, -0.6), (4.6, -0.6)), ((4.6, -0.6), (4.6, 0.6)),
+        ((-0.8, 0.6), (2.0, 0.6)), ((3.2, 0.6), (4.6, 0.6)),
+        ((2.0, 0.6), (2.0, 3.0)), ((3.2, 0.6), (3.2, 3.0)), ((2.0, 3.0), (3.2, 3.0)),
+    ]
+    for y in (0.0, 0.45, -0.45):
+        objetos = [("prohibido", (4.6, y), IZQ_X), ("cara", (2.6, 3.0), DER_Y)]
+        res = simular_directo(paredes, objetos, sesgo_px=sesgo)
+        dec = res["d"].decisiones
+        assert res["ok"] and dec and dec[0]["senal"] == "prohibido" and dec[0]["accion"] == "izq", (y, dec, res["d"].eventos)
