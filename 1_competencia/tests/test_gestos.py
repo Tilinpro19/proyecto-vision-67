@@ -50,8 +50,9 @@ def test_mano_muy_lejos_no_cuenta():
 
 
 def run(ctrl, seq, dt=1 / 30):
-    """seq: [(pose, segundos)] -> (direcciones, eventos)."""
-    t, dirs, evs = 0.0, [], []
+    """seq: [(pose, segundos)] -> (direcciones, eventos). El reloj sigue entre llamadas
+    (como time.monotonic en el robot)."""
+    t, dirs, evs = getattr(ctrl, "_t_sim", 0.0), [], []
     for pose, dur in seq:
         for _ in range(int(round(dur / dt))):
             d, e = ctrl.update(pose, t)
@@ -59,6 +60,7 @@ def run(ctrl, seq, dt=1 / 30):
             if e:
                 evs.append(e)
             t += dt
+    ctrl._t_sim = t
     return dirs, evs
 
 
@@ -81,14 +83,14 @@ def test_armado_mueve_y_sin_mano_para():
     run(c, [("palma", 1.3)])
     dirs, _ = run(c, [("like", 0.5)])
     assert dirs[-1] == (1, 0) and dirs[0] == (0, 0)   # espera STABLE_FRAMES
-    dirs, _ = run(c, [(None, 0.2)])
+    dirs, _ = run(c, [(None, 0.3)])          # tolera GRACIA s de parpadeo y despues para
     assert dirs[-1] == (0, 0) and c.armed
 
 
 def test_puno_desarma():
     c = gt.ControlGestos()
     run(c, [("palma", 1.3), ("like", 0.5)])
-    dirs, evs = run(c, [("puno", 0.3), ("like", 0.5)])
+    dirs, evs = run(c, [("puno", 0.7), ("like", 0.5)])     # mantener PUNO_HOLD s
     assert evs == ["desarmado"] and dirs[-1] == (0, 0)
 
 
@@ -104,3 +106,68 @@ def test_victoria_dispara_una_sola_vez():
 def test_victoria_desarmado_no_dispara():
     _, evs = run(gt.ControlGestos(), [("victoria", 3.0)])
     assert evs == []
+
+
+# --- problemas encontrados en la revision ----------------------------------------------
+
+def test_puno_frena_al_instante_pero_un_puno_de_paso_no_desarma():
+    """like -> dislike: el pulgar cruza por 'puno' ~0.1-0.2 s y antes desarmaba."""
+    c = gt.ControlGestos()
+    run(c, [("palma", 1.3), ("like", 0.5)])
+    dirs, evs = run(c, [("puno", 0.2)])
+    assert all(d == (0, 0) for d in dirs)      # frena desde el PRIMER cuadro de puno
+    dirs, evs = run(c, [("dislike", 0.5)])
+    assert c.armed and evs == [] and dirs[-1] == (-1, 0)
+
+
+def test_transicion_real_de_like_a_dislike_no_desarma():
+    from test_gestos import THUMB as T
+    c = gt.ControlGestos()
+    run(c, [("palma", 1.3), ("like", 0.5)])
+    t, evs = 5.0, []
+    for k in range(10):                        # pulgar de arriba a abajo en 0.3 s a 30 fps
+        f = k / 9
+        T["tmp"] = tuple(np.array(T["up"]) * (1 - f) + np.array(T["down"]) * f)
+        _, e = c.update(gt.classify_pose(hand(thumb="tmp")), t)
+        t += 1 / 30
+        if e:
+            evs.append(e)
+    assert c.armed and evs == []
+
+
+def test_dislike_y_pistola_frenan_el_avance_sin_esperar_la_gracia():
+    c = gt.ControlGestos()
+    run(c, [("palma", 1.3), ("like", 0.5)])
+    dirs, _ = run(c, [("pistola_izq", 1 / 30)])
+    assert dirs == [(0, 0)]                    # otra pose: no sigue avanzando
+
+
+def test_un_cuadro_sin_mano_no_corta_el_movimiento():
+    c = gt.ControlGestos()
+    run(c, [("palma", 1.3), ("like", 0.5)])
+    dirs, _ = run(c, [(None, 1 / 30), ("like", 0.2)])
+    assert all(d == (1, 0) for d in dirs), dirs
+
+
+def test_comando_tarea_b_devuelve_numeros_y_respeta_el_freno():
+    """mision.tarea_b guardaba la TUPLA de front_limit() en lin: TypeError al armar con el
+    robot real (en --dry no se veia) y el freno del LiDAR quedaba anulado."""
+    lin, ang, aviso = gt.comando(( 1, 0), 0.3, 1.0, None, None)
+    assert isinstance(lin, float) and lin == pytest.approx(0.3) and ang == 0.0 and aviso == ""
+
+    class LidarFrente:                         # pared a 0.25 m al frente
+        def fresh(self):
+            return True
+        data = (np.full(360, 0.25), np.linspace(-np.pi, np.pi, 360, endpoint=False))
+    import nav_core as nc
+    lin, ang, aviso = gt.comando((1, 0), 0.3, 1.0, LidarFrente(), nc.NavParams())
+    assert lin == 0.0 and "FRENO" in aviso
+    lin, ang, aviso = gt.comando((0, -1), 0.3, 1.0, LidarFrente(), nc.NavParams())
+    assert lin == 0.0 and ang == pytest.approx(-1.0)
+
+
+def test_mision_usa_comando_y_no_la_tupla():
+    import inspect
+    import mision as ms
+    src = inspect.getsource(ms.tarea_b)
+    assert "lin = front_limit(" not in src and "comando(" in src

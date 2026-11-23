@@ -1199,7 +1199,7 @@ def tarea_b(args, s, m):
     import cv2
 
     from comun import LIMIT_ANGULAR, LIMIT_LINEAR, clamp
-    from gestos_teleop import Gestos, draw_hud, front_limit
+    from gestos_teleop import Gestos, comando, draw_hud
     from mano_teleop import PANEL_H, fit_height, robot_panel
 
     mp, nav = s.mp, nc.NavParams()
@@ -1222,8 +1222,9 @@ def tarea_b(args, s, m):
             if evento:
                 m.evento(f"gesto: {evento}")
             img = s.frame_nuevo()
-            lin = front_limit(direction[0] * max_l, s.lidar, nav)
-            ang = direction[1] * max_a
+            # comando() devuelve numeros: antes aca se guardaba la tupla (lineal, aviso) de
+            # front_limit -> TypeError al armar con el robot real y freno del LiDAR anulado
+            lin, ang, aviso = comando(direction, max_l, max_a, s.lidar, nav)
             if m.estado == ESPERA and evento == "armado":
                 origen = s.odom.pose
                 m.ir(IR_A_B)
@@ -1256,7 +1257,7 @@ def tarea_b(args, s, m):
             elif moving:
                 s.sender.stop()
                 moving = False
-            draw_hud(frame, pose, gestos.ctrl, t, lin, ang, f"| {m.estado} {m.tiempo():.1f}s")
+            draw_hud(frame, pose, gestos.ctrl, t, lin, ang, f"| {m.estado} {m.tiempo():.1f}s {aviso}")
             cv2.imshow(win, np.hstack([fit_height(frame, PANEL_H), robot_panel(s.cam)]))
             cv2.waitKey(1)
             try:
