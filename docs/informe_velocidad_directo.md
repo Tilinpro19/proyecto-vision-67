@@ -31,19 +31,36 @@ trajo de ella es el arreglo del detector de atascos (sección 5.1).
 
 ## 3. Señales nuevas ("Copia de señales.docx")
 
-| Señal | Antes (`señales.docx`) | Ahora | Detector anterior |
-|---|---|---|---|
-| Flechas izq/der | círculo **blanco** con borde y flecha negros | círculo **AZUL** (RGB 0, 112, 192) con borde y flecha negros | **0 detecciones** a cualquier distancia |
-| Prohibido | blanco y negro | igual | detecta |
-| Bandera de cuadros | blanco y negro | igual | detecta |
-| QR `milestone_*` (6) | — | idénticos, byte a byte | detecta |
+Se renderizó el documento completo con Word (9 páginas):
 
-En el docx solo vienen imágenes de flecha **derecha** (3). La izquierda se probó como su espejo.
-Hay 19 imágenes de 1×1 px vacías: parecen formas que se perdieron al copiar el documento.
-Conviene confirmar con el profe cuántas flechas de cada lado habrá.
+| Página | Contenido |
+|---|---|
+| 1 | 3 flechas **azules** a la derecha (imágenes) |
+| 2 | 2 prohibidos (blanco y negro) |
+| 3 | 2 círculos **rojos lisos** |
+| 4 | 1 flecha **azul** a la derecha (dibujo vectorial) + 1 círculo azul liso |
+| 5 | 1 flecha **ROJA** a la derecha (vectorial) + 1 círculo rojo liso |
+| 6 | bandera de cuadros |
+| 7–9 | 6 QR `milestone_*`, idénticos a los anteriores byte a byte |
 
-**Arreglo** (`senales_forma._a_gris`, commit `d9c008a`): antes de clasificar, los píxeles azules
-(por tono y saturación en HSV) se pintan al **nivel de blanco del papel en esa misma imagen**.
+- Las flechas son **azules o rojas**: círculo de color con borde y flecha negros. Antes eran
+  blanco y negro, y el detector anterior daba **0 detecciones** con las de color.
+- **No hay ninguna flecha izquierda en el documento.** Las 6 formas `bentArrow` no tienen
+  `flipH` ni rotación. La izquierda se probó como espejo de la derecha.
+- **Preguntas para el profe:**
+  1. ¿Habrá flechas izquierdas?
+  2. ¿Qué significa una flecha **roja**?
+  3. ¿Qué significan los **círculos lisos** rojo y azul?
+  4. ¿Se imprimen a color?
+
+  Mientras tanto, la flecha roja se detecta pero **por defecto se ignora** (`flecha_roja =
+  "ignorar"`). En tránsito, rojo suele ser prohibición: ignorarla cuesta a lo sumo tiempo, y
+  obedecer un "no gires" sería peor. Con `--param flecha_roja=obedecer` se trata como una azul.
+  Los círculos lisos no se detectan como flecha (hay un test que lo verifica).
+
+**Arreglo** (`senales_forma._a_gris`, commits `d9c008a` y `c71c92f`): antes de clasificar, los
+píxeles azules **y rojos** (por tono y saturación en HSV) se pintan al **nivel de blanco del
+papel en esa misma imagen**. El color se informa aparte, en `Senal.color`.
 La señal queda igual a la versión blanco y negro, así que sirven las mismas plantillas y la
 misma verificación geométrica que nunca confunde izq, der y prohibido. Se usa también en el
 filtro previo `buscar_candidatos()`, el que `mision.py` corre antes de `detectar()`.
@@ -59,8 +76,14 @@ Robustez, con flecha a 0.5–1.4 m y giro de 0° y 25°:
 | oscura + desaturada | 8/8 |
 | muy apagada (brillo 50 % y saturación 35 %) | 3–4/8 (límite conocido) |
 
+Si la hoja se imprime **en gris** no queda color que mapear y el disco sale gris medio. Para ese
+caso se agregó un respaldo: si la clasificación normal falla, se reintenta con un umbral entre
+el negro y el gris del disco. Detecta 3/3 de 0.5 a 1.1 m, sin falsos positivos nuevos en fondos,
+caras, patrones ni texturas.
+
 En ningún caso hubo confusiones entre izq, der y prohibido. Tests:
-`test_flecha_azul_se_detecta_y_nunca_se_confunde` (32 casos),
+`test_flecha_azul_se_detecta_y_nunca_se_confunde` (64 casos: azul en imagen, azul vectorial y roja),
+`test_circulos_de_color_lisos_no_son_flechas`, `test_flecha_impresa_en_escala_de_grises_tambien_se_detecta`,
 `test_prohibido_y_bandera_nuevos_se_detectan` y `test_objetos_azules_sin_flecha_no_son_senales`.
 
 ### 3.1 Alcance real del detector y FOV del preview
@@ -168,6 +191,32 @@ Son 17.6 m de ida por el centro del pasillo y 7 decisiones. Se probó a 0.55, 0.
 - **Arreglo:** el mismo filtro lateral para flechas (`flechas_solo_frente = True`).
 - **Test:** `test_flecha_impresa_en_caja_lateral_no_desvia`.
 
+### 5.4 Callejón aparente: no rendirse y usar la cámara (commit `9377aeb`)
+
+- **Síntoma:** el que vio el equipo en el robot. Al llegar a una caja con flecha que sobresale
+  de la pared del fondo (como en el video), el robot **confirmaba la flecha**, pero el LiDAR no
+  veía una salida "perfecta". Decía "callejón sin salida", miraba y daba media vuelta. Se
+  repetía 3 veces y **nunca llegaba a las caras**. Pasaba ya con la caja sobresaliendo 0.2 m sin
+  flecha, y desde 0.35 m también con flecha.
+- **Causa:** una salida lateral solo contaba si los rayos a 75°, 90° y 105° estaban libres justo
+  donde el robot frenaba. Si la salida empieza un poco más adelante (al costado de la caja) o el
+  robot está algo torcido, alguno de los tres pega en el borde.
+- **Arreglo, el "rescate":** antes de mirar y dar media vuelta:
+  1. Revisa cada costado con un abanico de rayos de 45° a 105°. Un lado está "abierto" si algún
+     rayo llega bastante más lejos que la pared lateral esperada.
+  2. Si hay lado abierto, **prefiere el de la flecha que vio la cámara**. Si no hubo flecha,
+     toma el menos visitado.
+  3. Gira hacia ese lado y el piloto con evasión (VFH) **rodea la esquina** durante
+     `t_respaldo`, sin decidir de nuevo hasta avanzar 0.85 m.
+  4. Un callejón de verdad (paredes en 3 lados) sigue dando media vuelta. Se rescata una sola
+     vez por lugar.
+- **Resultado:** con la caja sobresaliendo 0.2 y 0.35 m, con y sin flecha, llega a las caras
+  con **0 callejones** y 0 choques. Si sobresale 0.45 m o más, el hueco entre caja y pared queda
+  en 0.41 m para un robot de 0.34 m; el VFH no se mete y el robot vuelve, igual que antes.
+- **Tests:** `test_caja_que_sobresale_no_es_callejon` (4 casos) y
+  `test_callejon_de_verdad_no_se_rescata`. Los de callejón con y sin caras siguen pasando, y el
+  circuito del video queda igual (0 callejones).
+
 ## 6. Resultados de velocidad
 
 Tiempo A→B→A en segundos, el **peor caso** de las dos condiciones duras (deriva +3 % y −3 %),
@@ -231,18 +280,18 @@ después:
 **Antes de la competencia:**
 
 1. **Comparar lo que hay en la Pi**, sin modificar nada:
-   `ssh ubuntu@192.168.185.3 'cd ~/mision_mov && md5sum directo.py nav_core.py navegacion.py mision.py senales_forma.py'`.
-   Comparar contra `md5sum` de esta rama. Si `mision.py` u otro archivo de `guiado-directo`
-   difiere, hay que copiar todo, no solo los archivos de este informe.
-2. Copiar a `~/mision_mov/`: `directo.py`, `nav_core.py`, `navegacion.py`, `mision.py`,
-   `senales_forma.py`, `config_rapido.json` y `config_agresivo.json` (por `scp`). No usar
+   `ssh ubuntu@192.168.185.3 'cd ~/mision_mov && md5sum *.py config*.json'` contra
+   `md5sum 1_competencia/*.py 1_competencia/config*.json` de esta rama. `directo.py` importa
+   `decision.py` y `pasillo.py`, y `mision.py` importa varios más: si **cualquiera** difiere, hay
+   que copiarlo.
+2. Copiar a `~/mision_mov/` todos los `.py` y `config*.json` que difieran (por `scp`). No usar
    `desplegar_en_robot.sh`.
 3. En la primera corrida con `--config config_rapido.json`, revisar el log: la línea
    `ajustes {...}` no debe venir acompañada de `[params] '…' no existe`. Si aparece, la Pi tiene un
    `mision.py` viejo que descarta los parámetros del modo directo, y "rápido" correría a la
    velocidad base.
 4. Poner una flecha azul impresa frente al robot y correr `--dry --ver`: comprobar que la
-   reconoce a ~1 m. Es la primera vez que se prueban en la cámara real.
+   reconoce a ~1 m. Las flechas de color **nunca se probaron con la cámara real**.
 
 ## 8. Lo que falta validar en el robot
 
@@ -263,8 +312,8 @@ Si hay un choque o un roce, volver al perfil anterior.
 
 | Archivo | Qué es |
 |---|---|
-| `1_competencia/senales_forma.py` | detección de flechas azules (también en el filtro previo) |
-| `1_competencia/directo.py` | filtro de señal lateral, bandera manda de cerca, FOV del preview |
+| `1_competencia/senales_forma.py` | flechas azules y rojas (`Senal.color`), respaldo para impresión en gris |
+| `1_competencia/directo.py` | filtro de señal lateral, bandera manda de cerca, FOV del preview, `flecha_roja`, rescate de callejón aparente |
 | `1_competencia/mision.py` | le pasa el alto de la imagen al modo directo |
 | `1_competencia/nav_core.py`, `navegacion.py` | `ProgressMonitor` con giro neto |
 | `1_competencia/config_rapido.json`, `config_agresivo.json` | perfiles de los intentos 2 y 3 |
@@ -274,5 +323,5 @@ Si hay un choque o un roce, volver al perfil anterior.
 | `1_competencia/tests/camara_sim.py` | resolución, FOV, alcance por tipo y pérdida de cuadros |
 | `docs/bench_directo.csv` | resultados completos: perfil × escenario × condición |
 
-Tests: **290 pasan** y 1 se salta (`pytest 1_competencia/tests`). `test_scans_reales` necesita `tests/scans_reales/`, que no está
+Tests: **316 pasan** y 1 se salta (`pytest 1_competencia/tests`). `test_scans_reales` necesita `tests/scans_reales/`, que no está
 versionado: copiarlo del worktree `guiado-directo`.
