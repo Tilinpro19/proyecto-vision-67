@@ -1045,7 +1045,7 @@ def tarea_a_guiada(args, s, m, piloto):
             if img is not None and (t - t_cam) >= mp.cam_periodo:
                 t_cam = t
                 # Filtro rapido en preview antes de correr el detector completo (ahorro CPU Pi)
-                senales_vistas = sf.detectar(img, esfuerzo_qr=1) if sf.buscar_candidatos(img) else []
+                senales_vistas = sf.detectar(img, esfuerzo_qr=1, fov_deg=37.0 if img.shape[0] == img.shape[1] else 69.0) if sf.buscar_candidatos(img) else []
                 if guiado.registrar_senales(t, senales_vistas, m):
                     s.sender.send(0.0, 0.0)
                     m.ir(LLEGADA_B, "bandera de cuadros confirmada")
@@ -1141,7 +1141,7 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
             r, a = s.lidar.data
             if img is not None and (t - t_cam) >= mp.cam_periodo:
                 t_cam = t
-                senales = sf.detectar(img, esfuerzo_qr=1) if sf.buscar_candidatos(img) else []
+                senales = sf.detectar(img, esfuerzo_qr=1, fov_deg=37.0 if img.shape[0] == img.shape[1] else 69.0) if sf.buscar_candidatos(img) else []
                 d.ver_senales(t, senales, img.shape[1], s.odom.pose, r, a, alto_img=img.shape[0])
                 # Caras solo cerca del fondo o mirando un callejon: en marcha cuestan CPU de la
                 # Pi y una cara del publico a un costado no debe cortar el recorrido.

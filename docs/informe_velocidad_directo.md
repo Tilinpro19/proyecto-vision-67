@@ -290,8 +290,12 @@ después:
    `ajustes {...}` no debe venir acompañada de `[params] '…' no existe`. Si aparece, la Pi tiene un
    `mision.py` viejo que descarta los parámetros del modo directo, y "rápido" correría a la
    velocidad base.
-4. Poner una flecha azul impresa frente al robot y correr `--dry --ver`: comprobar que la
-   reconoce a ~1 m. Las flechas de color **nunca se probaron con la cámara real**.
+4. Poner una flecha azul impresa a ~1 m frente al robot y correr, a bordo,
+   `./competencia_onboard.sh --dry`. `--dry` corre la misión completa sin publicar `/cmd_vel`,
+   así que el robot no se mueve. En la consola o el log debe aparecer
+   `flecha confirmada: izq a ~1.0 m`. **No usar `--ver` por SSH**: sin pantalla, `cv2.imshow`
+   falla, y además `--ver` solo dibuja el estado, no las señales; `--ver` va solo desde la PC.
+   Las flechas de color **nunca se probaron con la cámara real**.
 
 ## 8. Lo que falta validar en el robot
 

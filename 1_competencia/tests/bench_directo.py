@@ -117,7 +117,7 @@ PERFILES = {
     "rapido C": dict(v_recto=0.30, v_regreso=0.30, v_acercar=0.24, v_estrecho=0.24, v_cerca=0.16,
                      w_giro=1.8, d_lento=0.9, max_accel=0.7),
     "rapido D": dict(v_recto=0.30, v_regreso=0.30, v_acercar=0.26, v_estrecho=0.26, v_cerca=0.18,
-                     w_giro=2.0, k_giro=2.6, d_lento=0.8, max_accel=0.8),
+                     w_giro=1.9, k_giro=2.6, d_lento=0.8, max_accel=0.8),
 }
 
 

@@ -107,9 +107,12 @@ class DirectoParams:
     # Callejon APARENTE (caja que sobresale, salida que empieza un poco mas adelante, robot torcido):
     # antes de mirar y dar media vuelta, abanico de rayos 45-105 grados por lado; si un lado se abre
     # (prefiere el de la flecha vista), gira hacia el y Piloto (VFH) rodea la esquina t_respaldo s.
+    # Tras terminar un giro el ultimo scan puede ser de ANTES de girar (LiDAR atrasado ~0.3 s en
+    # la Pi): todavia "ve" la pared que tenia enfrente y decidia otra vez en el mismo punto.
+    decidir_espera: float = 0.6  # s  sin decidir por frente cerrado tras un giro
     rescate: bool = True
     rescate_extra: float = 0.30  # m  rayo libre mas alla de donde estaria la pared lateral
-    rescate_min: float = 0.60    # m  y al menos esto libre  # el mismo filtro para flechas (video: flecha impresa en una caja lateral)
+    rescate_min: float = 0.60    # m  y al menos esto libre
     # Tras cada giro: rumbo de la odometria corregido UNA vez con las dos paredes del pasillo
     # (en 0.57 m, 10-15 grados de deriva tras la media vuelta dejan al robot contra una pared)
     rumbo_paredes: bool = True
@@ -225,6 +228,7 @@ class PilotoDirecto:
         self._prohibidos_lat = set()
         self._roja_avisada = False
         self._rescatados = set()
+        self._t_fin_giro = -1e9
         self._rescate_xy = None
         self._respaldo_tras_giro = False
 
@@ -349,6 +353,7 @@ class PilotoDirecto:
                 self.ruta.append(dict(xy=(x0, y0), de=de, a=self.rumbo_obj))
                 self.rumbo = self.rumbo_obj
                 self.estado = RECTO
+                self._t_fin_giro = t
                 self._rumbo_tras_giro(t)
                 self.piloto.reanudar()
                 self._lin_prev, self._t_prev = 0.0, None
@@ -700,7 +705,16 @@ class PilotoDirecto:
             return False         # sin rango no se puede ubicar: se trata como antes
         rel = nc.wrap(pose[2] + b - self.rumbo)          # respecto del rumbo del pasillo
         lat, adelante = d * math.sin(rel), d * math.cos(rel)
-        limite = max(0.15, 0.5 * self.ancho - self.dp.prohibido_borde)
+        # respecto del EJE del pasillo (no del robot): con las dos paredes a +-90 se corrige lo
+        # que el robot vaya corrido, y el ancho medido ahora vale si aun no hay uno fijado
+        ancho = self.ancho
+        izq = pared_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(10.0))
+        der = pared_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(10.0))
+        if izq is not None and der is not None and max(izq, der) < self.dp.ancho_inicial:
+            lat += (der - izq) / 2.0
+            if self._ancho_n == 0:
+                ancho = izq + der
+        limite = max(0.15, 0.5 * ancho - self.dp.prohibido_borde)
         frente = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(4.0))
         frente = math.inf if frente is None else frente
         if abs(lat) <= limite or adelante >= frente - self.dp.lateral_antes_frente:
@@ -794,7 +808,7 @@ class PilotoDirecto:
                     and (self._lado_libre(r, a, pose, "izq") or self._lado_libre(r, a, pose, "der")))
             else:
                 por_flecha = fwd <= self._d_giro() and self._lado_libre(r, a, pose, p["tipo"])
-        por_frente = front <= self._d_frente()
+        por_frente = front <= self._d_frente() and t - self._t_fin_giro >= self.dp.decidir_espera
         lateral = self._lado_libre(r, a, pose, "izq") or self._lado_libre(r, a, pose, "der")
         lejos = (self._xy_decision is None
                  or math.dist(pose[:2], self._xy_decision) >= self.dp.dist_cruce)
@@ -870,7 +884,9 @@ class PilotoDirecto:
         for g in (45.0, 60.0, 75.0, 90.0, 105.0):
             d = rango_en(r, a, nc.wrap(self.rumbo + signo * math.radians(g) - pose[2]), math.radians(4.0))
             esperado = h / math.sin(math.radians(g))
-            if d is None or (d >= esperado + self.dp.rescate_extra and d >= self.dp.rescate_min):
+            # sin retorno (pared negra, cinta reflectiva, < scan_min) NO es salida: una abertura
+            # real de laboratorio siempre devuelve la pared de mas alla
+            if d is not None and d >= esperado + self.dp.rescate_extra and d >= self.dp.rescate_min:
                 return True
         return False
 

@@ -660,3 +660,52 @@ def test_callejon_de_verdad_no_se_rescata():
         t += 0.1
     assert d.decisiones[0]["accion"] == "retroceder" and d.estado == dr.MIRAR
     assert not any("callejon aparente" in e for e in d.eventos)
+
+
+def test_rescate_no_toma_un_hueco_del_lidar_como_salida():
+    """Pared negra / cinta reflectiva: ventana de rayos sin retorno. Antes contaba como abierta
+    (rango_en -> None) y el rescate giraba contra la pared."""
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    paredes = [((-0.5, -0.4), (-0.5, 0.4)), ((-0.5, 0.4), (3.0, 0.4)), ((-0.5, -0.4), (3.0, -0.4)),
+               ((3.0, -0.4), (3.0, 0.4))]
+    sim = Sim(paredes, start=(2.6, 0.0, 0.0))
+    d.iniciar(sim.odom, *sim.scan())
+    d.ancho = 0.80
+    r, a = sim.scan()
+    pose = d.piloto.pose(sim.odom)
+    assert not d._lado_abierto_amplio(r, a, pose, "izq")
+    hueco = np.abs(nc_wrap(a - math.radians(60.0))) < math.radians(5.0)
+    assert not d._lado_abierto_amplio(r[~hueco], a[~hueco], pose, "izq")
+
+
+@pytest.mark.parametrize("corrido", [0.15, -0.15])
+def test_senal_lateral_se_mide_desde_el_eje_aunque_el_robot_vaya_corrido(corrido):
+    # pasillo de 0.75 m; robot corrido 15 cm; cartel en la pared derecha a 1.0 m del fondo
+    paredes = [((-0.5, -0.375), (-0.5, 0.375)), ((-0.5, 0.375), (4.0, 0.375)),
+               ((-0.5, -0.375), (4.0, -0.375)), ((4.0, -0.375), (4.0, 0.375))]
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    sim = Sim(paredes, start=(2.2, corrido, 0.0))
+    d.iniciar(sim.odom, *sim.scan())
+    d.ancho, d._ancho_n = 0.75, 5
+    r, a = sim.scan()
+    for lado_y in (0.375, -0.375):
+        s, _ = ver(sim.true, [("prohibido", (3.2, lado_y), (0.0, -1.0 if lado_y > 0 else 1.0))], paredes,
+                   ang_max_deg=85.0)
+        assert s, "la camara simulada no ve el cartel"
+        assert d._prohibido_lateral(s[0], ANCHO, d.piloto.pose(sim.odom), r, a), (corrido, lado_y, d.eventos)
+
+
+def test_tras_un_giro_no_decide_con_el_scan_viejo():
+    """config_agresivo a 0.90 m con LiDAR atrasado: obedecia la flecha en la esquina 2 y 1.1 s
+    despues, en el mismo punto, decidia otra vez con el scan de antes del giro y se volvia."""
+    import json
+    import bench_directo as bd
+    import pista_video as pv
+    with open(os.path.join(ROOT, "config_agresivo.json"), encoding="utf-8") as f:
+        ajustes = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    paredes, objetos = pv.circuito(0.90)
+    r = bd.simular(paredes, objetos, ajustes, latencia=2, retardo=3, ruido=0.01, deriva=0.03, cam=bd.CAM_REAL)
+    assert r["ok"] and r["choques"] == 0, r["d"].eventos
+    assert [x["accion"] for x in r["d"].decisiones] == ["izq", "izq", "der", "der", "der", "izq", "izq"]

@@ -29,7 +29,7 @@
   "fov_deg": 69.0,
   "v_estrecho": 0.26,
   "v_cerca": 0.18,
-  "w_giro": 2.0,
+  "w_giro": 1.9,
   "k_giro": 2.6,
   "d_lento": 0.8
 }
