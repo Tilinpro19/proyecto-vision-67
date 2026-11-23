@@ -41,7 +41,9 @@ ESPERA, IR_A_B, SEGUIR, DECIDIR, LLEGADA_B, ESCANEAR, VOLVER_A_A, ANUNCIAR, FIN,
 
 @dataclass
 class MisionParams:
-    t_max: float = 300.0          # s   tiempo maximo (aun no anunciado): pasado esto, para
+    t_max: float = 900.0          # s   red de seguridad (si se traba para siempre). La rubrica NO tiene un
+                                  #     t_max fijo: es el del equipo mas lento; cortar antes = 0 seguro.
+                                  #     Si el lab anuncia un maximo oficial, poner ESE. Pasado esto, para
     choque_dist: float = 0.20     # m   algo a menos de esto del centro = choque (radio 0.17)
     llegada: str = "distancia"    # llegada a B: distancia | foto | cualquiera
     foto_ancho: float = 0.10      # cara >= esta fraccion del ancho de imagen = "llegue (foto)"

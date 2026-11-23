@@ -12,7 +12,7 @@
   "goal_tol": 0.25,
   "home_tol": 0.20,
   "stuck_time": 4.5,
-  "t_max": 300.0,
+  "t_max": 900.0,
   "choque_dist": 0.20,
   "llegada": "distancia",
   "senal_prohibido": "buscar_otro",

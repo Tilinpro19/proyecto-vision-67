@@ -217,6 +217,31 @@ Son 17.6 m de ida por el centro del pasillo y 7 decisiones. Se probó a 0.55, 0.
   `test_callejon_de_verdad_no_se_rescata`. Los de callejón con y sin caras siguen pasando, y el
   circuito del video queda igual (0 callejones).
 
+### 5.5 Revisión externa (Antigravity) y doble decisión tras un giro (commit `a815a2c`)
+
+- **Hueco del LiDAR tomado como salida:** en el rescate, una ventana sin retornos (pared negra,
+  cinta reflectiva) contaba como abierta y el robot podía girar contra la pared. Ahora exige un
+  rayo válido. Test: `test_rescate_no_toma_un_hueco_del_lidar_como_salida`.
+- **Señal lateral medida desde el robot y no desde el eje:** con el robot corrido 15 cm en un
+  pasillo de 0.75 m, el cartel del lado cercano no se filtraba. Ahora se corrige con las dos
+  paredes. Test: `test_senal_lateral_se_mide_desde_el_eje_aunque_el_robot_vaya_corrido`
+  (falla sin el arreglo).
+- **Doble decisión en la misma esquina:** con el LiDAR atrasado 0.3 s, justo al terminar un giro
+  el último scan todavía mostraba la pared de antes del giro. El robot decidía otra vez en el
+  mismo punto y volvía por donde vino; con `config_agresivo.json` a 0.90 m eso agotaba el
+  tiempo. Ahora no decide por frente cerrado hasta 0.6 s después de un giro. Test:
+  `test_tras_un_giro_no_decide_con_el_scan_viejo`.
+- **Menores:** `w_giro` del agresivo bajó a 1.9, el máximo del TurtleBot 4. `detectar()` usa el
+  FOV del preview también para la distancia estimada.
+
+### 5.6 `t_max` interno de 300 s aseguraba un 0
+
+`config.json` tenía `t_max: 300`. Al pasarlo, la misión pasa a `PARADA` y el robot **se queda
+quieto en medio del circuito**. Pero en la rúbrica `t_max` no es un límite fijo: es el tiempo del
+equipo más lento. El perfil base ya tardaba ~253 s simulados en pasillos de 0.75 m, sin el
+escaneo en B. Ahora `t_max` es **900 s** en los tres perfiles, como red de seguridad por si se
+traba para siempre. **Si el laboratorio anuncia un tiempo máximo oficial, hay que poner ese.**
+
 ## 6. Resultados de velocidad
 
 Tiempo A→B→A en segundos, el **peor caso** de las dos condiciones duras (deriva +3 % y −3 %),
@@ -230,7 +255,7 @@ Todos los perfiles mostrados tienen **0 choques** y las 7 decisiones correctas.
 | base (`config.json`) | sí | 256 | 253 | 254 | 253 | 182 | 170 | 48 |
 | **rapido B → `config_rapido.json`** | **sí** | 174 | 172 | 170 | **170** | 149 | 148 | 33 |
 | rapido C | no* | 174 | 171 | 169 | 169 | 148 | 145 | 33 |
-| rapido D → `config_agresivo.json` | no* | 166 | 159 | 158 | 156 | 143 | 141 | 31 |
+| rapido D → `config_agresivo.json` | no* | 167 | 159 | 163 | 156 | 150 | 142 | 31 |
 
 \* C y D no fallan por choques. Fallan porque terminan a 0.38–0.41 m del punto de salida. El
 robot igual declara la llegada a la zona de A a menos de 0.40 m (`a_suficiente`), pero no sabemos
@@ -312,13 +337,45 @@ después:
 `python3 2_laboratorio/calibrar.py --intentos 2 --c 5 -- --tarea A --config config_rapido.json`.
 Si hay un choque o un roce, volver al perfil anterior.
 
-## 9. Archivos
+## 9. Tarea B: gestos con la mano (commit `13582b6`)
+
+1. **La Tarea B se caía al armar, con el robot real.** Desde el commit `08870c9`,
+   `front_limit()` devuelve `(velocidad, aviso)`, pero `mision.tarea_b()` guardaba la tupla
+   entera como velocidad lineal. Al armar con la palma, `send()` lanzaba `TypeError` y la misión
+   terminaba. Con `--dry` no se veía, porque `send()` sale antes de convertir el valor. Además,
+   la tupla siempre cuenta como "verdadera", así que el freno del LiDAR quedaba anulado. Ahora
+   `gestos_teleop.comando()` devuelve números y la usan los dos programas. Tests:
+   `test_comando_tarea_b_devuelve_numeros_y_respeta_el_freno` y
+   `test_mision_usa_comando_y_no_la_tupla`.
+2. **Un puño "de paso" desarmaba el robot.** Al pasar de like (adelante) a dislike (atrás), el
+   pulgar cruza por la pose de puño 0.1–0.2 s y eso desarmaba. Había que volver a mostrar la
+   palma 1 s. Ahora el puño **frena desde el primer cuadro**, pero desarma solo si se mantiene
+   0.5 s (`PUNO_HOLD`). Test: `test_transicion_real_de_like_a_dislike_no_desarma`, con la
+   transición del pulgar a 30 fps.
+3. **Cada parpadeo del detector frenaba a tirones.** Si MediaPipe pierde la mano 1 o 2 cuadros,
+   el robot sigue con el mismo movimiento hasta 0.15 s (`GRACIA`, ~4.5 cm a 0.3 m/s). Una pose
+   distinta (puño, dislike, pistola) **no** entra en esa tolerancia: frena al momento.
+4. El encabezado decía "dislike → parar", pero el código siempre lo usó para **retroceder**, con
+   freno del LiDAR atrás. Se corrigió el texto.
+
+## 10. Revisión de las reglas de la competencia
+
+| Regla | Cómo lo cumple el código |
+|---|---|
+| Tarea A: cero intervención una vez iniciado | La misión no lee teclado; los `cv2.waitKey(1)` solo refrescan la ventana. El robot sale solo al lanzar el comando. Usar `/mision/parar` o Ctrl+C **termina el intento**: son solo para emergencias. |
+| Tarea B: solo señales visuales, sin teclado, mouse ni joystick | Armar, mover, escanear (V) y anunciar se hacen con gestos. Al terminar (estado `FIN`) el programa se cierra solo: **no hay que cerrar la ventana con el mouse**. Se lanza antes de empezar el intento. |
+| Choques con obstáculos y paredes | Todo cambio se aceptó solo con 0 choques y ≥ 5 cm de holgura en simulación. En la Tarea B el avance y el retroceso se frenan con el LiDAR (arreglo 9.1: antes ese freno estaba anulado). |
+| Identificación incorrecta (penalidad severa) | Siempre anuncia el mejor candidato, aunque sea dudoso, nunca "desconocido". Así es máxima la probabilidad de acertar. |
+| Puntaje 0 si no vuelve a A o si `t > t_max` | `t_max` interno a 900 s (sección 5.6). Ver la sección 7 para la escalera de intentos. |
+
+## 11. Archivos
 
 | Archivo | Qué es |
 |---|---|
 | `1_competencia/senales_forma.py` | flechas azules y rojas (`Senal.color`), respaldo para impresión en gris |
 | `1_competencia/directo.py` | filtro de señal lateral, bandera manda de cerca, FOV del preview, `flecha_roja`, rescate de callejón aparente |
-| `1_competencia/mision.py` | le pasa el alto de la imagen al modo directo |
+| `1_competencia/mision.py` | le pasa el alto de la imagen al modo directo; Tarea B con `comando()`; `t_max` 900 s |
+| `1_competencia/gestos_teleop.py` | `comando()`, `PUNO_HOLD`, `GRACIA` |
 | `1_competencia/nav_core.py`, `navegacion.py` | `ProgressMonitor` con giro neto |
 | `1_competencia/config_rapido.json`, `config_agresivo.json` | perfiles de los intentos 2 y 3 |
 | `1_competencia/tests/senales_ref_azul/` | imágenes y docx de las señales nuevas |
@@ -327,5 +384,5 @@ Si hay un choque o un roce, volver al perfil anterior.
 | `1_competencia/tests/camara_sim.py` | resolución, FOV, alcance por tipo y pérdida de cuadros |
 | `docs/bench_directo.csv` | resultados completos: perfil × escenario × condición |
 
-Tests: **316 pasan** y 1 se salta (`pytest 1_competencia/tests`). `test_scans_reales` necesita `tests/scans_reales/`, que no está
+Tests: **326 pasan** y 1 se salta (`pytest 1_competencia/tests`). `test_scans_reales` necesita `tests/scans_reales/`, que no está
 versionado: copiarlo del worktree `guiado-directo`.
