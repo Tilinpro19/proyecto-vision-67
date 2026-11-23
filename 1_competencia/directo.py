@@ -64,7 +64,11 @@ class DirectoParams:
     confirmar: int = 2           # lecturas seguidas iguales para aceptar una flecha
     radio_misma: float = 0.45    # m    dos lecturas a menos de esto = la misma flecha
     radio_obedecida: float = 0.60  # m  flecha ya obedecida: se ignora
-    fov_deg: float = 69.0        # FOV horizontal de la camara (OAK-D Lite RGB)
+    fov_deg: float = 69.0        # FOV horizontal de la camara (OAK-D Lite RGB, cuadro 16:9)
+    # /oakd/rgb/preview (el topico por defecto) es 250x250 RECORTADO del centro: ~37 grados
+    # (medido en el lab, ver 3_referencia/sigueme.py). Con 69 el rumbo de la senal sale ~2x y el
+    # rango del LiDAR se mide en otra direccion. Imagen cuadrada -> se usa este.
+    fov_cuadrado_deg: float = 37.0
     ventana_rango_deg: float = 3.0
     zanahoria: float = 1.4       # m    punto a seguir por el rumbo del pasillo
     w_goal_recto: float = 4.0    # peso del rumbo en choose_heading (respaldo con Piloto)
@@ -215,8 +219,11 @@ class PilotoDirecto:
         self.piloto.fijar_origen(odom_pose, ranges, angles)
         self.rumbo = self.rumbo_obj = 0.0
 
-    def ver_senales(self, t, senales, ancho_img, odom_pose, ranges, angles):
-        """Una lectura de camara. Devuelve True si la bandera quedo confirmada."""
+    def ver_senales(self, t, senales, ancho_img, odom_pose, ranges, angles, alto_img=None):
+        """Una lectura de camara. Devuelve True si la bandera quedo confirmada.
+        alto_img: con imagen cuadrada (preview recortado) el FOV es fov_cuadrado_deg."""
+        self._fov = (self.dp.fov_cuadrado_deg if alto_img is not None and abs(alto_img - ancho_img) <= 2
+                     else self.dp.fov_deg)
         if self.estado != RECTO:
             return False    # girando o frenado: la camara barre senales que no son del pasillo
         pose = self.piloto.pose(odom_pose)
@@ -645,7 +652,7 @@ class PilotoDirecto:
 
     def _rumbo_senal(self, s, ancho):
         x, _, w, _ = s.bbox
-        return rumbo_en_imagen(x + w / 2.0, ancho, self.dp.fov_deg)
+        return rumbo_en_imagen(x + w / 2.0, ancho, getattr(self, "_fov", self.dp.fov_deg))
 
     def _rango_senal(self, s, ancho, r, a):
         """Distancia a la senal: LiDAR en su rumbo (fiable) o el estimado por tamano."""

@@ -1142,7 +1142,7 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
             if img is not None and (t - t_cam) >= mp.cam_periodo:
                 t_cam = t
                 senales = sf.detectar(img, esfuerzo_qr=1) if sf.buscar_candidatos(img) else []
-                d.ver_senales(t, senales, img.shape[1], s.odom.pose, r, a)
+                d.ver_senales(t, senales, img.shape[1], s.odom.pose, r, a, alto_img=img.shape[0])
                 # Caras solo cerca del fondo o mirando un callejon: en marcha cuestan CPU de la
                 # Pi y una cara del publico a un costado no debe cortar el recorrido.
                 if d.estado == dr.MIRAR or frente < dp.d_lento:

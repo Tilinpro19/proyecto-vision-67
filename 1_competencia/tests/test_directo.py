@@ -587,3 +587,16 @@ def test_prohibido_al_fondo_con_sesgo_de_camara_se_obedece(sesgo):
         res = simular_directo(paredes, objetos, sesgo_px=sesgo)
         dec = res["d"].decisiones
         assert res["ok"] and dec and dec[0]["senal"] == "prohibido" and dec[0]["accion"] == "izq", (y, dec, res["d"].eventos)
+
+
+def test_preview_cuadrado_usa_el_fov_recortado():
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    sim = Sim(pista_zigzag())
+    d.iniciar(sim.odom, *sim.scan())
+    r, a = sim.scan()
+    borde = Senal("izq", 0.9, (240, 100, 10, 10))     # centro en x=245 de 250 px
+    d.ver_senales(0.0, [], 250, sim.odom, r, a, alto_img=250)
+    assert math.isclose(math.degrees(abs(d._rumbo_senal(borde, 250))), 17.6, abs_tol=1.0)   # ~37/2
+    d.ver_senales(0.0, [], 640, sim.odom, r, a, alto_img=360)
+    assert math.isclose(math.degrees(abs(d._rumbo_senal(borde, 640))), 9.2, abs_tol=1.0)   # 75 px a 69 grados
