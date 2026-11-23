@@ -64,7 +64,11 @@ class DirectoParams:
     confirmar: int = 2           # lecturas seguidas iguales para aceptar una flecha
     radio_misma: float = 0.45    # m    dos lecturas a menos de esto = la misma flecha
     radio_obedecida: float = 0.60  # m  flecha ya obedecida: se ignora
-    fov_deg: float = 69.0        # FOV horizontal de la camara (OAK-D Lite RGB)
+    fov_deg: float = 69.0        # FOV horizontal de la camara (OAK-D Lite RGB, cuadro 16:9)
+    # /oakd/rgb/preview (el topico por defecto) es 250x250 RECORTADO del centro: ~37 grados
+    # (medido en el lab, ver 3_referencia/sigueme.py). Con 69 el rumbo de la senal sale ~2x y el
+    # rango del LiDAR se mide en otra direccion. Imagen cuadrada -> se usa este.
+    fov_cuadrado_deg: float = 37.0
     ventana_rango_deg: float = 3.0
     zanahoria: float = 1.4       # m    punto a seguir por el rumbo del pasillo
     w_goal_recto: float = 4.0    # peso del rumbo en choose_heading (respaldo con Piloto)
@@ -91,6 +95,24 @@ class DirectoParams:
     bandera_frames: int = 2
     d_bandera: float = 1.0       # m    la bandera confirma la llegada solo a menos de esto
     d_prohibido: float = 3.0     # m    prohibido pendiente a menos de esto: tomar la salida lateral
+    # Prohibido pegado en una pared/caja LATERAL (video de referencia: justo antes de la bandera)
+    # no cierra el camino de frente: solo cuenta si queda cerca del eje del pasillo.
+    prohibido_borde: float = 0.15  # m  lateral > max(0.15, ancho/2 - esto) -> lateral, se ignora
+    lateral_antes_frente: float = 0.30  # m  ...y a mas de esto antes de la pared del frente
+    flechas_solo_frente: bool = True
+    # "Copia de senales.docx" trae flechas ROJAS ademas de azules. Significado sin confirmar (en
+    # transito rojo = prohibicion): por defecto se ignoran (cuesta a lo sumo tiempo; obedecer un
+    # "no gires" seria peor). "obedecer" = como una azul.
+    flecha_roja: str = "ignorar"
+    # Callejon APARENTE (caja que sobresale, salida que empieza un poco mas adelante, robot torcido):
+    # antes de mirar y dar media vuelta, abanico de rayos 45-105 grados por lado; si un lado se abre
+    # (prefiere el de la flecha vista), gira hacia el y Piloto (VFH) rodea la esquina t_respaldo s.
+    # Tras terminar un giro el ultimo scan puede ser de ANTES de girar (LiDAR atrasado ~0.3 s en
+    # la Pi): todavia "ve" la pared que tenia enfrente y decidia otra vez en el mismo punto.
+    decidir_espera: float = 0.6  # s  sin decidir por frente cerrado tras un giro
+    rescate: bool = True
+    rescate_extra: float = 0.30  # m  rayo libre mas alla de donde estaria la pared lateral
+    rescate_min: float = 0.60    # m  y al menos esto libre
     # Tras cada giro: rumbo de la odometria corregido UNA vez con las dos paredes del pasillo
     # (en 0.57 m, 10-15 grados de deriva tras la media vuelta dejan al robot contra una pared)
     rumbo_paredes: bool = True
@@ -203,19 +225,32 @@ class PilotoDirecto:
         self.eventos = []             # textos para el registro
         self.decisiones = []          # dict(t, pose, opciones, senal, accion)
         self.qrs = []
+        self._prohibidos_lat = set()
+        self._roja_avisada = False
+        self._rescatados = set()
+        self._t_fin_giro = -1e9
+        self._rescate_xy = None
+        self._respaldo_tras_giro = False
 
     # --- API ------------------------------------------------------------------
     def iniciar(self, odom_pose, ranges, angles):
         self.piloto.fijar_origen(odom_pose, ranges, angles)
         self.rumbo = self.rumbo_obj = 0.0
 
-    def ver_senales(self, t, senales, ancho_img, odom_pose, ranges, angles):
-        """Una lectura de camara. Devuelve True si la bandera quedo confirmada."""
+    def ver_senales(self, t, senales, ancho_img, odom_pose, ranges, angles, alto_img=None):
+        """Una lectura de camara. Devuelve True si la bandera quedo confirmada.
+        alto_img: con imagen cuadrada (preview recortado) el FOV es fov_cuadrado_deg."""
+        self._fov = (self.dp.fov_cuadrado_deg if alto_img is not None and abs(alto_img - ancho_img) <= 2
+                     else self.dp.fov_deg)
         if self.estado != RECTO:
             return False    # girando o frenado: la camara barre senales que no son del pasillo
         pose = self.piloto.pose(odom_pose)
         r, a = nc.clean_scan(ranges, angles, self.piloto.nav.scan_min)
         vio_bandera, nav_tomada = False, False
+        # bandera CERCA en el mismo cuadro: manda sobre un prohibido (de lejos puede ser un
+        # falso positivo, p. ej. un codigo de barras en una caja)
+        hay_bandera = any(s.tipo == "bandera" and (self._rango_senal(s, ancho_img, r, a) or math.inf)
+                          <= self.dp.d_bandera + 1.0 for s in senales or ())
         for s in senales or ():
             if s.tipo == "qr":
                 if s.texto and s.texto not in self.qrs:
@@ -225,6 +260,17 @@ class PilotoDirecto:
                 # cuenta solo cerca: de lejos (se ve a ~2.6 m) las caras salen chicas en el escaneo
                 d = self._rango_senal(s, ancho_img, r, a)
                 vio_bandera = d is None or d <= self.dp.d_bandera
+            elif s.tipo == "prohibido" and (hay_bandera or self._prohibido_lateral(s, ancho_img, pose, r, a)):
+                continue     # la bandera manda / letrero al costado: no cierra el frente
+            elif (s.tipo in ("izq", "der") and getattr(s, "color", None) == "rojo"
+                  and self.dp.flecha_roja != "obedecer"):
+                if not self._roja_avisada:
+                    self._roja_avisada = True
+                    self.eventos.append(f"flecha ROJA '{s.tipo}' ignorada (flecha_roja={self.dp.flecha_roja})")
+                continue
+            elif (s.tipo in ("izq", "der") and self.dp.flechas_solo_frente
+                  and self._prohibido_lateral(s, ancho_img, pose, r, a)):
+                continue     # flecha al costado (caja impresa): no es la del cruce
             elif s.tipo in ("izq", "der", "prohibido") and not nav_tomada:
                 nav_tomada = True    # detectar() ordena por area: la mas cercana primero
                 self._leer_flecha(s, ancho_img, pose, r, a)
@@ -307,9 +353,14 @@ class PilotoDirecto:
                 self.ruta.append(dict(xy=(x0, y0), de=de, a=self.rumbo_obj))
                 self.rumbo = self.rumbo_obj
                 self.estado = RECTO
+                self._t_fin_giro = t
                 self._rumbo_tras_giro(t)
                 self.piloto.reanudar()
                 self._lin_prev, self._t_prev = 0.0, None
+                if self._respaldo_tras_giro:
+                    self._respaldo_tras_giro = False
+                    self._a_respaldo(t)      # Piloto (VFH) rodea la caja / esquina
+                    self._rescate_xy = (pose[0], pose[1])
             else:
                 w = float(np.clip(self.dp.k_giro * err, -self.dp.w_giro, self.dp.w_giro))
                 if abs(w) < self.dp.w_giro_min:
@@ -324,7 +375,14 @@ class PilotoDirecto:
         front = nav.max_range if front is None else front
         alineado = abs(nc.wrap(pose[2] - self.rumbo)) < math.radians(self.dp.alineado_deg)
         fwd = self._adelante(pose)
-        if alineado:
+        rodeando = False
+        if self._rescate_xy is not None:
+            # saliendo de un callejon aparente: sin decidir hasta rodear la esquina
+            rodeando = (t < self._piloto_hasta
+                        and math.dist(pose[:2], self._rescate_xy) < self.dp.dist_cruce)
+            if not rodeando:
+                self._rescate_xy = None
+        if alineado and not rodeando:
             self._medir_ancho(pose, r, a)
             accion = self._quizas_decidir(t, pose, r, a, front, fwd)
             if accion is not None:
@@ -630,12 +688,43 @@ class PilotoDirecto:
 
     def _rumbo_senal(self, s, ancho):
         x, _, w, _ = s.bbox
-        return rumbo_en_imagen(x + w / 2.0, ancho, self.dp.fov_deg)
+        return rumbo_en_imagen(x + w / 2.0, ancho, getattr(self, "_fov", self.dp.fov_deg))
 
     def _rango_senal(self, s, ancho, r, a):
         """Distancia a la senal: LiDAR en su rumbo (fiable) o el estimado por tamano."""
         d = rango_en(r, a, self._rumbo_senal(s, ancho), math.radians(self.dp.ventana_rango_deg))
         return d if d is not None else getattr(s, "distancia_m", None)
+
+    def _prohibido_lateral(self, s, ancho, pose, r, a):
+        """True si la senal (prohibido o flecha) esta pegada a un COSTADO del pasillo: corrida
+        del eje Y claramente antes de la pared del frente (LiDAR por el rumbo del pasillo).
+        Una senal en la pared/caja del fondo, aunque este descentrada, NO es lateral."""
+        b = self._rumbo_senal(s, ancho)
+        d = self._rango_senal(s, ancho, r, a)
+        if d is None:
+            return False         # sin rango no se puede ubicar: se trata como antes
+        rel = nc.wrap(pose[2] + b - self.rumbo)          # respecto del rumbo del pasillo
+        lat, adelante = d * math.sin(rel), d * math.cos(rel)
+        # respecto del EJE del pasillo (no del robot): con las dos paredes a +-90 se corrige lo
+        # que el robot vaya corrido, y el ancho medido ahora vale si aun no hay uno fijado
+        ancho = self.ancho
+        izq = pared_en(r, a, nc.wrap(self.rumbo + math.pi / 2 - pose[2]), math.radians(10.0))
+        der = pared_en(r, a, nc.wrap(self.rumbo - math.pi / 2 - pose[2]), math.radians(10.0))
+        if izq is not None and der is not None and max(izq, der) < self.dp.ancho_inicial:
+            lat += (der - izq) / 2.0
+            if self._ancho_n == 0:
+                ancho = izq + der
+        limite = max(0.15, 0.5 * ancho - self.dp.prohibido_borde)
+        frente = rango_en(r, a, nc.wrap(self.rumbo - pose[2]), math.radians(4.0))
+        frente = math.inf if frente is None else frente
+        if abs(lat) <= limite or adelante >= frente - self.dp.lateral_antes_frente:
+            return False
+        clave = (round(pose[0] + d * math.cos(pose[2] + b), 1), round(pose[1] + d * math.sin(pose[2] + b), 1))
+        if clave not in self._prohibidos_lat:
+            self._prohibidos_lat.add(clave)
+            self.eventos.append(f"{s.tipo} lateral ignorado: a {lat:+.2f} m del eje y {frente - adelante:.2f} m "
+                                f"antes del frente")
+        return True
 
     def _leer_flecha(self, s, ancho, pose, r, a):
         b = self._rumbo_senal(s, ancho)
@@ -719,7 +808,7 @@ class PilotoDirecto:
                     and (self._lado_libre(r, a, pose, "izq") or self._lado_libre(r, a, pose, "der")))
             else:
                 por_flecha = fwd <= self._d_giro() and self._lado_libre(r, a, pose, p["tipo"])
-        por_frente = front <= self._d_frente()
+        por_frente = front <= self._d_frente() and t - self._t_fin_giro >= self.dp.decidir_espera
         lateral = self._lado_libre(r, a, pose, "izq") or self._lado_libre(r, a, pose, "der")
         lejos = (self._xy_decision is None
                  or math.dist(pose[:2], self._xy_decision) >= self.dp.dist_cruce)
@@ -768,9 +857,15 @@ class PilotoDirecto:
             self._girar_a(self.rumbo + math.pi)
             return None
         if accion == "retroceder":
-            self.estado = MIRAR
-            self.t_mirar0 = None
-            return None
+            lado = self._rescate(r, a, pose, key, tipo, mapa, ago, vis_rel)
+            if lado is not None:
+                self.decisiones[-1].update(accion=lado, motivo="rescate")
+                accion = lado
+                self._respaldo_tras_giro = True
+            else:
+                self.estado = MIRAR
+                self.t_mirar0 = None
+                return None
         vis[cardinal(self.rumbo + math.pi)] = max(vis.get(cardinal(self.rumbo + math.pi), 0), 1)
         vis[mapa[accion]] = vis.get(mapa[accion], 0) + 1
         self.ultimo_cruce = (key, mapa[accion])
@@ -779,6 +874,37 @@ class PilotoDirecto:
         elif accion == "der":
             self._girar_a(self.rumbo - math.pi / 2.0)
         return None
+
+    def _lado_abierto_amplio(self, r, a, pose, lado):
+        """Abanico 45-105 grados (respecto del rumbo del pasillo): algun rayo llega bastante mas
+        lejos que la pared lateral esperada (ancho/2 / sin g). Detecta salidas que empiezan un
+        poco mas adelante (caja que sobresale del fondo) o con el robot algo torcido."""
+        signo = 1.0 if lado == "izq" else -1.0
+        h = 0.5 * self.ancho
+        for g in (45.0, 60.0, 75.0, 90.0, 105.0):
+            d = rango_en(r, a, nc.wrap(self.rumbo + signo * math.radians(g) - pose[2]), math.radians(4.0))
+            esperado = h / math.sin(math.radians(g))
+            # sin retorno (pared negra, cinta reflectiva, < scan_min) NO es salida: una abertura
+            # real de laboratorio siempre devuelve la pared de mas alla
+            if d is not None and d >= esperado + self.dp.rescate_extra and d >= self.dp.rescate_min:
+                return True
+        return False
+
+    def _rescate(self, r, a, pose, key, tipo, mapa, ago, vis_rel):
+        """Lado por el que salir de un callejon aparente, o None (callejon de verdad)."""
+        if not self.dp.rescate or key in self._rescatados:
+            return None
+        lados = [l for l in ("izq", "der") if mapa[l] not in ago and self._lado_abierto_amplio(r, a, pose, l)]
+        if not lados:
+            return None
+        if tipo in lados:
+            lado, por = tipo, "la flecha"
+        else:
+            lado = min(lados, key=lambda l: (vis_rel.get(l, 0), l != "izq"))
+            por = "el LiDAR"
+        self._rescatados.add(key)
+        self.eventos.append(f"callejon aparente: salgo por {lado} (por {por}; Piloto rodea la esquina)")
+        return lado
 
     def _pasar_cruce(self, pose):
         """Paso de largo por una salida lateral: queda en la memoria como cruce con el origen

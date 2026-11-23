@@ -244,17 +244,19 @@ def angular_limit(max_angular, nearest_dist, p=NavParams()):
 
 
 class ProgressMonitor:
-    """Atasco = el robot no avanza 'min_progress' m en una ventana de tiempo.
+    """Atasco = el robot no avanza 'min_progress' m ni gira en neto 'min_turn' rad en una ventana.
 
     Dos casos (self.motivo): "empuja" = lleva 'window' s mandando velocidad de verdad
     (esfuerzo medio >= min_effort) y no se mueve: choque con algo bajo/rueda trabada.
     "espera" = casi no manda velocidad (frena a proposito ante un obstaculo o gira): solo se
-    considera atasco tras 'window_wait' s, para no confundir frenar con estar trabado."""
+    considera atasco tras 'window_wait' s, para no confundir frenar con estar trabado.
+    Girar 180 grados quieto para volver cuenta como avance; oscilar izquierda-derecha no."""
 
-    def __init__(self, window=5.0, min_progress=0.08, window_wait=None, min_effort=0.03):
+    def __init__(self, window=5.0, min_progress=0.08, window_wait=None, min_effort=0.03,
+                 min_turn=math.radians(60)):
         self.window, self.min_progress = window, min_progress
         self.window_wait = max(window, window_wait if window_wait is not None else window)
-        self.min_effort = min_effort
+        self.min_effort, self.min_turn = min_effort, min_turn
         self.motivo = None
         self.hist = deque()
 
@@ -271,12 +273,18 @@ class ProgressMonitor:
         p0 = tramo[0][1]
         mov = max(np.linalg.norm(h[1] - p0) for h in tramo)
         esf = float(np.mean([h[2] for h in tramo]))
-        return mov < self.min_progress, esf
+        g0, g1 = tramo[0][3], tramo[-1][3]
+        giro = abs(g1 - g0) if g0 is not None and g1 is not None else 0.0
+        return (mov < self.min_progress and giro < self.min_turn), esf
 
-    def update(self, t, xy, effort=None):
+    def update(self, t, xy, effort=None, yaw=None):
         """effort = velocidad lineal mandada (m/s); None = se asume que empuja."""
         e = 1.0 if effort is None else abs(float(effort))
-        self.hist.append((t, np.asarray(xy, float), e))
+        giro = 0.0
+        if yaw is not None and self.hist and self.hist[-1][3] is not None:
+            giro = float(wrap(yaw - self.hist[-1][4]))
+        acum = (self.hist[-1][3] if self.hist else 0.0) or 0.0
+        self.hist.append((t, np.asarray(xy, float), e, acum + giro if yaw is not None else None, yaw))
         while len(self.hist) > 1 and t - self.hist[1][0] >= self.window_wait:
             self.hist.popleft()
         self.motivo = None

@@ -173,3 +173,87 @@ def test_tiempo_deteccion_acotado():
     dt_det_ms = (time.perf_counter() - t1) * 1000.0
     assert len(res) >= 1 and res[0].tipo == "izq"
     assert dt_det_ms < 150.0
+
+
+# --- senales nuevas: flechas en circulo AZUL ("Copia de senales.docx") ---------------------
+
+REF_AZUL = os.path.join(HERE, "senales_ref_azul")
+
+
+def _hoja_color(nombre, flip=False, margen=0.12):
+    im = cv2.imread(os.path.join(REF_AZUL, nombre), cv2.IMREAD_UNCHANGED)
+    if im.shape[2] == 4:
+        a = im[:, :, 3:4] / 255.0
+        im = (im[:, :, :3] * a + 255 * (1 - a)).astype(np.uint8)
+    if flip:
+        im = cv2.flip(im, 1)
+    p = int(margen * max(im.shape[:2]))
+    return im, cv2.copyMakeBorder(im, p, p, p, p, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+
+
+def _luz(img, brillo, sat):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] *= sat
+    hsv[:, :, 2] *= brillo
+    return cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+
+@pytest.mark.parametrize("archivo", ["flecha_azul_der_a.png", "flecha_azul_der_b.png",
+                                     "flecha_azul_der_vector.png", "flecha_roja_der.png"])
+@pytest.mark.parametrize("flip,esperado", [(False, "der"), (True, "izq")])
+@pytest.mark.parametrize("luz", [(1.0, 1.0), (0.6, 1.0), (0.6, 0.5), (1.0, 0.5)])
+def test_flecha_azul_se_detecta_y_nunca_se_confunde(archivo, flip, esperado, luz):
+    im, hoja = _hoja_color(archivo, flip)
+    hoja = _luz(hoja, *luz)
+    rng = np.random.default_rng(0)
+    for d in (0.5, 0.8, 1.1, 1.4):
+        for yaw in (0, 25):
+            img = rs.degradar(rs.proyectar(hoja, hoja.shape[1], 0.107 * hoja.shape[1] / im.shape[1], d, 640,
+                                           yaw_deg=yaw), rng=rng)
+            assert sf.buscar_candidatos(img), f"sin candidato a {d} m"     # el filtro previo de mision.py
+            tipos = [s.tipo for s in sf.detectar(img)]
+            assert esperado in tipos, f"{archivo} {esperado} a {d} m yaw {yaw} luz {luz}: {tipos}"
+            assert not [t for t in tipos if t in ("izq", "der", "prohibido") and t != esperado], tipos
+            color = "rojo" if "roja" in archivo else "azul"
+            assert all(x.color == color for x in sf.detectar(img) if x.tipo == esperado)
+
+
+def test_prohibido_y_bandera_nuevos_se_detectan():
+    for archivo, esperado in (("prohibido.png", "prohibido"), ("bandera.png", "bandera")):
+        im, hoja = _hoja_color(archivo)
+        img = rs.degradar(rs.proyectar(hoja, hoja.shape[1], 0.107 * hoja.shape[1] / im.shape[1], 1.0, 640),
+                          rng=np.random.default_rng(0))
+        assert esperado in [s.tipo for s in sf.detectar(img)]
+
+
+def test_objetos_azules_sin_flecha_no_son_senales():
+    # cartel azul liso, circulo azul sin flecha, cielo/cajas azules: el azul pasa a papel y no queda forma
+    img = np.full((480, 640, 3), 190, np.uint8)
+    cv2.rectangle(img, (40, 60), (220, 260), (192, 112, 0), -1)
+    cv2.circle(img, (420, 200), 90, (192, 112, 0), -1)
+    cv2.circle(img, (420, 200), 90, (0, 0, 0), 12)          # anillo negro con interior azul vacio
+    img[350:] = (200, 140, 60)
+    tipos = [s.tipo for s in sf.detectar(img)]
+    assert not [t for t in tipos if t in ("izq", "der")], tipos
+
+
+@pytest.mark.parametrize("archivo", ["circulo_azul_liso.png", "circulo_rojo_liso.png"])
+def test_circulos_de_color_lisos_no_son_flechas(archivo):
+    im, hoja = _hoja_color(archivo)
+    rng = np.random.default_rng(0)
+    for d in (0.5, 0.9, 1.3):
+        img = rs.degradar(rs.proyectar(hoja, hoja.shape[1], 0.107 * hoja.shape[1] / im.shape[1], d, 640), rng=rng)
+        tipos = [x.tipo for x in sf.detectar(img)]
+        assert not [t for t in tipos if t in ("izq", "der", "prohibido")], (archivo, d, tipos)
+
+
+def test_flecha_impresa_en_escala_de_grises_tambien_se_detecta():
+    """Si la hoja se imprime en blanco y negro el azul queda gris medio (sin color que mapear)."""
+    im, hoja = _hoja_color("flecha_azul_der_b.png")
+    gris = cv2.cvtColor(cv2.cvtColor(hoja, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+    rng = np.random.default_rng(0)
+    vistas = []
+    for d in (0.5, 0.8, 1.1):
+        img = rs.degradar(rs.proyectar(gris, gris.shape[1], 0.107 * gris.shape[1] / im.shape[1], d, 640), rng=rng)
+        vistas.append([x.tipo for x in sf.detectar(img)])
+    assert all("der" in v for v in vistas), vistas

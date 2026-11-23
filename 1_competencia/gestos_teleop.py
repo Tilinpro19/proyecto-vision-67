@@ -2,10 +2,10 @@
 Teleoperacion del TurtleBot 4 con POSES de la mano, SIN teclado (Tarea B):
 
   palma abierta (mantener ARM_HOLD s)  -> ARMAR
-  puno cerrado                         -> PARAR y DESARMAR
+  puno cerrado                         -> PARAR (al instante); mantenido PUNO_HOLD s -> DESARMAR
   like  (pulgar arriba)                -> adelante
   pistola apuntando a la izq. / der.   -> girar izquierda / derecha
-  dislike (pulgar abajo)               -> parar (sigue armado)
+  dislike (pulgar abajo)               -> retroceder (con freno del LiDAR atras)
   V con dos dedos (mantener ACTION_HOLD s) -> ACCION (en mision.py: escanear la foto en
                                           B y, despues, anunciar el nombre en A)
   sin mano / pose dudosa / mano lejos  -> parar
@@ -37,6 +37,10 @@ THUMB_OPEN = 0.55      # pulgar estirado si |punta - base del indice| > 0.55 * t
 MIN_HAND_PX = 25       # mano mas chica (muneca -> base del medio) = muy lejos, no se confia
 ARM_HOLD = 1.0         # s con la palma para armar
 ACTION_HOLD = 1.5      # s con la V para la accion
+PUNO_HOLD = 0.5        # s con el puno para DESARMAR (frena enseguida; un puno "de paso" al
+                       # cambiar de like a dislike cruza ~0.1-0.2 s por puno y desarmaba)
+GRACIA = 0.15          # s que se sostiene el ultimo movimiento si MediaPipe pierde la mano
+                       # 1-2 cuadros (antes cada parpadeo frenaba el robot a tirones)
 
 # pose -> (texto en pantalla, (factor lineal, factor angular))
 POSES = {
@@ -103,11 +107,14 @@ class ControlGestos:
     """Pose por frame -> (direccion, evento). Eventos: 'armado', 'desarmado', 'accion'.
     Solo se mueve armado y con una pose estable; cualquier duda = quieto."""
 
-    def __init__(self, stable=STABLE_FRAMES, arm_hold=ARM_HOLD, action_hold=ACTION_HOLD):
+    def __init__(self, stable=STABLE_FRAMES, arm_hold=ARM_HOLD, action_hold=ACTION_HOLD,
+                 puno_hold=PUNO_HOLD, gracia=GRACIA):
         self.stable, self.arm_hold, self.action_hold = stable, arm_hold, action_hold
+        self.puno_hold, self.gracia = puno_hold, gracia
         self.armed = False
         self.last, self.count = None, 0
         self.held, self.held_t0, self.fired = None, 0.0, False
+        self.mov, self.t_mov = (0, 0), -1e9      # ultimo movimiento y cuando se vio
 
     def update(self, pose, t):
         self.count = self.count + 1 if pose == self.last else 1
@@ -117,8 +124,9 @@ class ControlGestos:
             self.held, self.held_t0, self.fired = stable, t, False
         held_for = t - self.held_t0
         evento = None
-        if stable == "puno" and self.armed:
-            self.armed, evento = False, "desarmado"
+        if (stable == "puno" and self.armed and not self.fired
+                and held_for >= self.puno_hold):
+            self.armed, self.fired, evento = False, True, "desarmado"
         elif (stable == "palma" and not self.armed and not self.fired
               and held_for >= self.arm_hold):
             self.armed, self.fired, evento = True, True, "armado"
@@ -126,11 +134,22 @@ class ControlGestos:
               and held_for >= self.action_hold):
             self.fired, evento = True, "accion"
         direction = POSES[stable][1] if self.armed and stable in POSES else (0, 0)
+        if direction != (0, 0):
+            self.mov, self.t_mov = direction, t
+        elif (self.armed and self.mov != (0, 0) and t - self.t_mov <= self.gracia
+              and (pose in (None, "nada") or (pose in POSES and POSES[pose][1] == self.mov))):
+            # parpadeo del detector (sin mano o pose dudosa 1-2 cuadros, o la MISMA pose que
+            # vuelve y todavia no junta STABLE_FRAMES): sigue igual un instante. Un puno /
+            # dislike / otra pose NO entra aca: frena al momento.
+            direction = self.mov
+        else:
+            self.mov = (0, 0)
         return direction, evento
 
     def progreso(self, t):
         """0..1 de cuanto falta para disparar la pose mantenida (para el HUD)."""
-        need = {"palma": self.arm_hold, "victoria": self.action_hold}.get(self.held)
+        need = {"palma": self.arm_hold, "victoria": self.action_hold,
+                "puno": self.puno_hold if self.armed else None}.get(self.held)
         if need is None or self.fired:
             return 0.0
         return min((t - self.held_t0) / need, 1.0)
@@ -193,6 +212,13 @@ def front_limit(linear, lidar, nav):
         if back_free < nav.stop_dist:
             return 0.0, f"[FRENO ATRAS: libre {back_free:.2f}m]"
         return float(max(linear, -0.12)), ""
+
+
+def comando(direction, max_l, max_a, lidar, nav):
+    """Direccion de ControlGestos -> (lineal, angular, aviso) en numeros, con el freno del
+    LiDAR aplicado al lineal. Lo usan gestos_teleop y mision.tarea_b."""
+    lin, aviso = front_limit(float(direction[0]) * max_l, lidar, nav)
+    return float(lin), float(direction[1]) * max_a, aviso
 
 
 def draw_hud(frame, pose, ctrl, t, linear, angular, extra=""):

@@ -97,6 +97,7 @@ class Senal:
     bbox: tuple             # (x, y, w, h) en pixeles enteros
     texto: str = None       # contenido para tipo == "qr"; None en el resto
     distancia_m: float = None
+    color: str = None       # fondo del circulo: "azul" | "rojo" | None (blanco y negro)
 
 
 def _corr(a, b):
@@ -144,7 +145,20 @@ def _clasificar_circulo(gray_crop):
 
     c32 = cv2.resize(gray_crop, (32, 32), interpolation=cv2.INTER_AREA)
     _, bw_u8 = cv2.threshold(c32, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-    bw = (bw_u8 > 0).astype(np.float32)
+    res = _clasificar_bw((bw_u8 > 0).astype(np.float32))
+    if res[0] is None:
+        # Respaldo: hoja de color impresa en GRIS (disco gris medio entre el negro y el papel).
+        # Umbral entre el negro (anillo y flecha) y el gris del disco: el disco cuenta como claro.
+        negro = float(np.percentile(c32, 8))
+        medio = float(np.median(c32))
+        if medio - negro > 30:
+            bw2 = (c32 < (negro + medio) / 2.0).astype(np.float32)
+            res = _clasificar_bw(bw2)
+    return res
+
+
+def _clasificar_bw(bw):
+    """Clasifica un recorte binarizado de 32x32 (1 = oscuro). (tipo, confianza) o (None, 0)."""
 
     ring_dark = float(bw[_RING_MASK].mean())
     inner_dark = float(bw[_INNER_MASK].mean())
@@ -266,14 +280,65 @@ def _es_bandera(gray_crop):
     return _eval_bw_bandera(bw_ad)
 
 
-def _a_gris(img):
+# Senales nuevas ("Copia de senales.docx"): flechas en circulo AZUL o ROJO con borde y flecha
+# negros (y circulos lisos azules/rojos). El color se pasa al nivel del papel: la senal queda igual
+# a la version blanco y negro (anillo negro, interior claro, flecha negra) y sirven las mismas
+# plantillas. Imagenes en B/N: sin cambio. El color se informa aparte en Senal.color.
+AZUL_H = (90, 135)      # tono OpenCV (0-179); el azul de la hoja (0, 112, 192) RGB ~ 103
+ROJO_H = (10, 168)      # rojo = tono FUERA de este rango (envuelve en 0/179)
+COLOR_S_MIN = 70        # saturacion minima (la camara apaga el color con poca luz)
+COLOR_V_MIN = 50
+AZUL_S_MIN = COLOR_S_MIN   # compatibilidad
+
+
+def _mascaras_color(img):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, sat, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    vivo = (sat >= COLOR_S_MIN) & (v >= COLOR_V_MIN)
+    azul = vivo & (h >= AZUL_H[0]) & (h <= AZUL_H[1])
+    rojo = vivo & ((h < ROJO_H[0]) | (h > ROJO_H[1]))
+    return azul, rojo
+
+
+def _bgr(img):
     if img.ndim == 2:
-        return img
+        return None
     if img.shape[2] == 4:
         alpha = img[:, :, 3:4].astype(np.float32) / 255.0
-        bgr = (img[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return (img[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+    return img
+
+
+def _a_gris(img):
+    bgr = _bgr(img)
+    if bgr is None:
+        return img
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    azul, rojo = _mascaras_color(bgr)
+    color = azul | rojo
+    if np.any(color):
+        gray = gray.copy()
+        # al nivel del papel de ESTA imagen (con poca luz el papel queda gris, no 255; un color
+        # mas blanco que el papel haria ver "oscuras" las esquinas de la hoja)
+        resto = gray[~color]
+        gray[color] = int(np.percentile(resto, 98)) if resto.size else 255
+    return gray
+
+
+def _color_circulo(img, box):
+    """'azul' | 'rojo' | None segun el color dominante dentro del circulo."""
+    bgr = _bgr(img)
+    if bgr is None:
+        return None
+    x, y, w, h = box
+    crop = bgr[y:y + h, x:x + w]
+    if crop.size == 0:
+        return None
+    azul, rojo = _mascaras_color(crop)
+    fa, fr = float(azul.mean()), float(rojo.mean())
+    if max(fa, fr) < 0.08:
+        return None
+    return "azul" if fa >= fr else "rojo"
 
 
 def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
@@ -344,7 +409,8 @@ def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
         if tipo is not None:
             ocupados.append(box)
             out.append(Senal(tipo, conf, box, texto=None,
-                             distancia_m=_estimar_dist(w, h, W, lado_m, fov_deg)))
+                             distancia_m=_estimar_dist(w, h, W, lado_m, fov_deg),
+                             color=_color_circulo(img, box)))
 
     # 3. Bandera de cuadros: combina mascara oscura y umbral adaptativo (resiste luz fuerte/sombras)
     thr_otsu, _ = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
@@ -400,7 +466,7 @@ def buscar_candidatos(img, area_min_frac=0.0015):
     con alto contraste local blanco/negro que justifican correr `detectar()` o pedir alta resolucion."""
     if img is None or img.size == 0:
         return []
-    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = _a_gris(img)     # azul -> papel: la flecha azul queda como la de blanco y negro
     H, W = gray.shape[:2]
     blur = cv2.GaussianBlur(gray, (3, 3), 0.8)
     blk = max(15, (min(H, W) // 6) | 1)

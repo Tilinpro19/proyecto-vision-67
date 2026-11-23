@@ -42,7 +42,9 @@ ESPERA, IR_A_B, SEGUIR, DECIDIR, LLEGADA_B, ESCANEAR, VOLVER_A_A, ANUNCIAR, FIN,
 
 @dataclass
 class MisionParams:
-    t_max: float = 300.0          # s   tiempo maximo (aun no anunciado): pasado esto, para
+    t_max: float = 900.0          # s   red de seguridad (si se traba para siempre). La rubrica NO tiene un
+                                  #     t_max fijo: es el del equipo mas lento; cortar antes = 0 seguro.
+                                  #     Si el lab anuncia un maximo oficial, poner ESE. Pasado esto, para
     choque_dist: float = 0.20     # m   algo a menos de esto del centro = choque (radio 0.17)
     llegada: str = "distancia"    # llegada a B: distancia | foto | cualquiera
     foto_ancho: float = 0.10      # cara >= esta fraccion del ancho de imagen = "llegue (foto)"
@@ -1160,7 +1162,10 @@ def tarea_a_guiada(args, s, m, piloto):
                 # Filtro rapido en preview antes de correr el detector completo (ahorro CPU Pi)
                 chica = img if img.shape[1] <= 640 else cv2.resize(
                     img, (640, round(img.shape[0] * 640 / img.shape[1])), interpolation=cv2.INTER_AREA)
-                senales_vistas = sf.detectar(chica, esfuerzo_qr=1) if sf.buscar_candidatos(chica) else []
+                senales_vistas = sf.detectar(
+                    chica, esfuerzo_qr=1,
+                    fov_deg=37.0 if chica.shape[0] == chica.shape[1] else 69.0
+                ) if sf.buscar_candidatos(chica) else []
                 if guiado.registrar_senales(t, senales_vistas, m, alto_img=chica.shape[0]):
                     s.sender.send(0.0, 0.0)
                     m.ir(LLEGADA_B, "bandera de cuadros confirmada")
@@ -1303,8 +1308,8 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
             r, a = s.lidar.data
             if img is not None and (t - t_cam) >= mp.cam_periodo:
                 t_cam = t
-                senales = sf.detectar(img, esfuerzo_qr=1) if sf.buscar_candidatos(img) else []
-                d.ver_senales(t, senales, img.shape[1], s.odom.pose, r, a)
+                senales = sf.detectar(img, esfuerzo_qr=1, fov_deg=37.0 if img.shape[0] == img.shape[1] else 69.0) if sf.buscar_candidatos(img) else []
+                d.ver_senales(t, senales, img.shape[1], s.odom.pose, r, a, alto_img=img.shape[0])
                 # Caras solo cerca del fondo o mirando un callejon: en marcha cuestan CPU de la
                 # Pi y una cara del publico a un costado no debe cortar el recorrido.
                 if d.estado == dr.MIRAR or frente < dp.d_lento:
@@ -1361,7 +1366,7 @@ def tarea_b(args, s, m):
     import cv2
 
     from comun import LIMIT_ANGULAR, LIMIT_LINEAR, clamp
-    from gestos_teleop import Gestos, draw_hud, front_limit
+    from gestos_teleop import Gestos, comando, draw_hud
     from mano_teleop import PANEL_H, fit_height, robot_panel
 
     mp, nav = s.mp, nc.NavParams()
@@ -1384,8 +1389,9 @@ def tarea_b(args, s, m):
             if evento:
                 m.evento(f"gesto: {evento}")
             img = s.frame_nuevo()
-            lin = front_limit(direction[0] * max_l, s.lidar, nav)
-            ang = direction[1] * max_a
+            # comando() devuelve numeros: antes aca se guardaba la tupla (lineal, aviso) de
+            # front_limit -> TypeError al armar con el robot real y freno del LiDAR anulado
+            lin, ang, aviso = comando(direction, max_l, max_a, s.lidar, nav)
             if m.estado == ESPERA and evento == "armado":
                 origen = s.odom.pose
                 m.ir(IR_A_B)
@@ -1418,7 +1424,7 @@ def tarea_b(args, s, m):
             elif moving:
                 s.sender.stop()
                 moving = False
-            draw_hud(frame, pose, gestos.ctrl, t, lin, ang, f"| {m.estado} {m.tiempo():.1f}s")
+            draw_hud(frame, pose, gestos.ctrl, t, lin, ang, f"| {m.estado} {m.tiempo():.1f}s {aviso}")
             cv2.imshow(win, np.hstack([fit_height(frame, PANEL_H), robot_panel(s.cam)]))
             cv2.waitKey(1)
             try:

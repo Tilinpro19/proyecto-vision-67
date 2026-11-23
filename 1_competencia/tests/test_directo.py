@@ -54,7 +54,8 @@ def _piloto_config():
     return piloto, mp, dp
 
 
-def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_extra=None, scan_retardo=0):
+def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_extra=None, scan_retardo=0,
+                    sesgo_px=0):
     sim = Sim(paredes, yaw_drift=yaw_drift, scan_retardo=scan_retardo)
     piloto, mp, dp = _piloto_config()
     for k, v in (dp_extra or {}).items():
@@ -68,6 +69,9 @@ def simular_directo(paredes, objetos, t_max=200.0, dt=0.1, yaw_drift=0.0, dp_ext
             if t - t_cam >= mp.cam_periodo:
                 t_cam = t
                 senales, cara = ver(sim.true, objetos, paredes)
+                if sesgo_px:
+                    senales = [Senal(x.tipo, x.confianza, (x.bbox[0] + sesgo_px, *x.bbox[1:]),
+                                     texto=x.texto, distancia_m=x.distancia_m) for x in senales]
                 d.ver_caras(t, cara)
                 d.ver_senales(t, senales, ANCHO, sim.odom, r, a)
             lin, ang, info = d.paso(t, sim.odom, r, a)
@@ -463,3 +467,245 @@ def test_lidar_atrasado_03s_sin_choques_y_vuelve_a_a(v):
     assert res["collisions"] == 0
     assert res["min_clear"] > ms.MisionParams().choque_dist
     assert math.hypot(*res["true"][:2]) < 0.45
+
+
+# --- tramo final del video de referencia (grupo Carranza, 00:59-01:05) -------------------
+
+def _tramo_final(salida_izq):
+    """Pasillo de 0.8 m hasta la bandera en x=4.0; caja con PROHIBIDO en la pared izquierda
+    (x=3.0, mirando al pasillo). Con salida_izq hay un hueco a la izquierda en x=1.6..2.4."""
+    h = 0.4
+    izq = ([((-0.5, h), (1.6, h)), ((1.6, h), (1.6, 2.0)), ((1.6, 2.0), (2.4, 2.0)),
+            ((2.4, 2.0), (2.4, h)), ((2.4, h), (4.0, h))] if salida_izq
+           else [((-0.5, h), (4.0, h))])
+    return izq + [((-0.5, -h), (4.0, -h)), ((-0.5, -h), (-0.5, h)), ((4.0, -h), (4.0, h))]
+
+
+OBJ_FINAL = [("prohibido", (3.0, 0.4), DER_Y), ("bandera", (4.0, 0.1), IZQ_X),
+             ("cara", (4.0, -0.15), IZQ_X)]
+
+
+@pytest.mark.parametrize("salida_izq", [False, True])
+def test_prohibido_lateral_antes_de_la_bandera_no_desvia(salida_izq):
+    res = simular_directo(_tramo_final(salida_izq), OBJ_FINAL, t_max=120.0)
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    assert res["min_clear"] > ms.MisionParams().choque_dist
+    d = res["d"]
+    assert not any(x["senal"] == "prohibido" for x in d.decisiones), d.decisiones
+    assert res["b_true"][0] > 3.0, res["b_true"]          # llego al fondo, junto a la bandera
+
+
+@pytest.mark.parametrize("salida_izq", [False, True])
+def test_prohibido_lateral_sin_bandera_a_la_vista_se_ignora_por_posicion(salida_izq):
+    # sin la regla "bandera en el mismo cuadro": solo el filtro por posicion lateral
+    objetos = [o for o in OBJ_FINAL if o[0] != "bandera"]
+    res = simular_directo(_tramo_final(salida_izq), objetos, t_max=120.0)
+    assert res["ok"], res["d"].eventos
+    assert res["collisions"] == 0
+    d = res["d"]
+    assert not any(x["senal"] == "prohibido" for x in d.decisiones), d.decisiones
+    assert res["b_true"][0] > 3.0, res["b_true"]
+    assert any("prohibido lateral" in e for e in d.eventos), d.eventos
+
+
+# --- circuito completo del video con los perfiles de competencia ---------------------------
+
+@pytest.mark.parametrize("cam", ["ideal", "real"])
+@pytest.mark.parametrize("cfg,ancho", [("config.json", 0.75), ("config_rapido.json", 0.75),
+                                       ("config_rapido.json", 0.65), ("config_rapido.json", 0.90)])
+def test_circuito_del_video_condiciones_duras_sin_choques(cfg, ancho, cam):
+    """Latencia de cmd_vel 0.2 s, LiDAR atrasado 0.3 s, 1 cm de ruido y 3 % de deriva."""
+    import json
+    import bench_directo as bd
+    import pista_video as pv
+    with open(os.path.join(ROOT, cfg), encoding="utf-8") as f:
+        ajustes = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    paredes, objetos = pv.circuito(ancho)
+    r = bd.simular(paredes, objetos, ajustes, latencia=2, retardo=3, ruido=0.01, deriva=0.03,
+                   cam=bd.CAM_REAL if cam == "real" else bd.CAM_IDEAL)
+    assert r["ok"], r["d"].eventos
+    assert r["choques"] == 0
+    assert r["holgura"] >= bd.HOLGURA_MIN
+    assert math.hypot(*r["true"][:2]) < 0.35
+    assert [x["accion"] for x in r["d"].decisiones] == ["izq", "izq", "der", "der", "der", "izq", "izq"]
+    if cam == "ideal":
+        assert len(r["d"].qrs) == 2      # el QR de 10 cm casi no se lee en el preview de 250 px
+    if cfg == "config_rapido.json":
+        assert r["t"] < 175.0      # base: ~250 s a 0.75 m
+
+
+@pytest.mark.parametrize("filtro", [True, False])
+def test_flecha_impresa_en_caja_lateral_no_desvia(filtro):
+    # video 00:46: caja con una flecha impresa al costado del pasillo, frente a una salida libre
+    objetos = [("izq", (2.0, -0.4), IZQ_Y)] + OBJ_FINAL
+    res = simular_directo(_tramo_final(True), objetos, t_max=120.0,
+                          dp_extra=dict(flechas_solo_frente=filtro))
+    d = res["d"]
+    if filtro:
+        assert res["ok"] and res["collisions"] == 0, d.eventos
+        assert d.decisiones == [] or all(x["accion"] != "izq" for x in d.decisiones), d.decisiones
+        assert res["b_true"][0] > 3.0
+        assert any("izq lateral ignorado" in e for e in d.eventos), d.eventos
+    else:
+        # sin el filtro la flecha falsa se confirma (asi era antes)
+        assert any("flecha confirmada: izq" in e for e in d.eventos), d.eventos
+
+
+# --- el filtro lateral NO debe rechazar senales reales del fondo -------------------------
+
+def _cruz(ancho, largo=3.0, brazo=2.0):
+    """Pasillo de `ancho` hasta una pared en x=largo con salidas a izquierda y derecha justo
+    antes del fondo (x = largo-ancho .. largo)."""
+    h, x0 = ancho / 2.0, largo - ancho
+    return [((-0.5, -h), (-0.5, h)), ((-0.5, h), (x0, h)), ((-0.5, -h), (x0, -h)),
+            ((x0, h), (x0, h + brazo)), ((largo, h), (largo, h + brazo)), ((x0, h + brazo), (largo, h + brazo)),
+            ((x0, -h), (x0, -h - brazo)), ((largo, -h), (largo, -h - brazo)), ((x0, -h - brazo), (largo, -h - brazo)),
+            ((largo, -h), (largo, h))]
+
+
+@pytest.mark.parametrize("ancho", [0.56, 0.80])
+@pytest.mark.parametrize("lado", [1.0, -1.0])
+@pytest.mark.parametrize("tipo", ["izq", "der"])
+def test_flecha_descentrada_en_la_pared_del_fondo_se_obedece(ancho, lado, tipo):
+    h, largo = ancho / 2.0, 3.0
+    yb = (h + 1.0) if tipo == "izq" else -(h + 1.0)
+    objetos = [(tipo, (largo, lado * (h - 0.08)), IZQ_X), ("cara", (largo - ancho / 2, yb + (1.0 if yb > 0 else -1.0)), (0.0, -1.0 if yb > 0 else 1.0))]
+    res = simular_directo(_cruz(ancho), objetos, t_max=120.0)
+    d = res["d"]
+    assert d.decisiones and d.decisiones[0]["senal"] == tipo and d.decisiones[0]["accion"] == tipo, (d.decisiones, d.eventos)
+    assert res["collisions"] == 0
+    assert not any("lateral ignorado" in e for e in d.eventos), d.eventos
+
+
+@pytest.mark.parametrize("sesgo", [30, -30])
+def test_prohibido_al_fondo_con_sesgo_de_camara_se_obedece(sesgo):
+    paredes = [
+        ((-0.8, -0.6), (-0.8, 0.6)), ((-0.8, -0.6), (4.6, -0.6)), ((4.6, -0.6), (4.6, 0.6)),
+        ((-0.8, 0.6), (2.0, 0.6)), ((3.2, 0.6), (4.6, 0.6)),
+        ((2.0, 0.6), (2.0, 3.0)), ((3.2, 0.6), (3.2, 3.0)), ((2.0, 3.0), (3.2, 3.0)),
+    ]
+    for y in (0.0, 0.45, -0.45):
+        objetos = [("prohibido", (4.6, y), IZQ_X), ("cara", (2.6, 3.0), DER_Y)]
+        res = simular_directo(paredes, objetos, sesgo_px=sesgo)
+        dec = res["d"].decisiones
+        assert res["ok"] and dec and dec[0]["senal"] == "prohibido" and dec[0]["accion"] == "izq", (y, dec, res["d"].eventos)
+
+
+def test_preview_cuadrado_usa_el_fov_recortado():
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    sim = Sim(pista_zigzag())
+    d.iniciar(sim.odom, *sim.scan())
+    r, a = sim.scan()
+    borde = Senal("izq", 0.9, (240, 100, 10, 10))     # centro en x=245 de 250 px
+    d.ver_senales(0.0, [], 250, sim.odom, r, a, alto_img=250)
+    assert math.isclose(math.degrees(abs(d._rumbo_senal(borde, 250))), 17.6, abs_tol=1.0)   # ~37/2
+    d.ver_senales(0.0, [], 640, sim.odom, r, a, alto_img=360)
+    assert math.isclose(math.degrees(abs(d._rumbo_senal(borde, 640))), 9.2, abs_tol=1.0)   # 75 px a 69 grados
+
+
+@pytest.mark.parametrize("politica", ["ignorar", "obedecer"])
+def test_flecha_roja_se_ignora_por_defecto(politica):
+    # cruce con salidas a ambos lados y una flecha ROJA "izq" en la pared del fondo
+    objetos = [("izq_roja", (3.0, 0.0), IZQ_X), ("cara", (2.6, 2.4), (0.0, -1.0)),
+               ("cara", (2.6, -2.4), (0.0, 1.0))]
+    res = simular_directo(_cruz(0.80), objetos, t_max=120.0, dp_extra=dict(flecha_roja=politica))
+    d = res["d"]
+    assert d.decisiones, d.eventos
+    if politica == "ignorar":
+        assert d.decisiones[0]["senal"] is None, d.decisiones
+        assert any("flecha ROJA" in e for e in d.eventos), d.eventos
+    else:
+        assert d.decisiones[0]["senal"] == "izq" and d.decisiones[0]["accion"] == "izq"
+
+
+# --- callejon APARENTE: no rendirse, usar la camara y rodear -------------------------------
+
+def _caja_en_el_fondo(sale, ancho=0.80):
+    """Cruce _cruz con una caja que sobresale `sale` m de la pared del fondo (la flecha va en
+    la caja, como en el video). Las salidas quedan a los costados de la caja, un poco adelante."""
+    from sim import box
+    return _cruz(ancho) + box(3.0 - sale / 2, 0.0, sale, 0.36)
+
+
+@pytest.mark.parametrize("sale", [0.20, 0.35])
+@pytest.mark.parametrize("flecha", [True, False])
+def test_caja_que_sobresale_no_es_callejon(sale, flecha):
+    # antes: "callejon sin salidas" -> mirar -> media vuelta (3 veces) y nunca llegaba a las caras
+    objetos = ([("izq", (3.0 - sale, 0.0), IZQ_X)] if flecha else []) + [("cara", (2.6, 2.4), (0.0, -1.0))]
+    res = simular_directo(_caja_en_el_fondo(sale), objetos, t_max=150.0)
+    d = res["d"]
+    assert res["ok"] and res["collisions"] == 0, d.eventos
+    assert d.callejones == 0, d.eventos
+    assert res["b_true"][1] > 0.6, res["b_true"]          # llego por la rama izquierda
+    assert d.decisiones[0]["accion"] == "izq"
+    if sale >= 0.35:
+        assert any("callejon aparente" in e for e in d.eventos), d.eventos
+
+
+def test_callejon_de_verdad_no_se_rescata():
+    paredes = [((-0.5, -0.4), (-0.5, 0.4)), ((-0.5, 0.4), (3.0, 0.4)), ((-0.5, -0.4), (3.0, -0.4)),
+               ((3.0, -0.4), (3.0, 0.4))]
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    sim = Sim(paredes)
+    d.iniciar(sim.odom, *sim.scan())
+    t = 0.0
+    while t < 40.0 and not d.decisiones:
+        r, a = sim.scan()
+        d.ver_senales(t, ver(sim.true, [("izq", (3.0, 0.0), IZQ_X)], paredes)[0], ANCHO, sim.odom, r, a)
+        lin, ang, _ = d.paso(t, sim.odom, r, a)
+        sim.step(lin, ang, 0.1)
+        t += 0.1
+    assert d.decisiones[0]["accion"] == "retroceder" and d.estado == dr.MIRAR
+    assert not any("callejon aparente" in e for e in d.eventos)
+
+
+def test_rescate_no_toma_un_hueco_del_lidar_como_salida():
+    """Pared negra / cinta reflectiva: ventana de rayos sin retorno. Antes contaba como abierta
+    (rango_en -> None) y el rescate giraba contra la pared."""
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    paredes = [((-0.5, -0.4), (-0.5, 0.4)), ((-0.5, 0.4), (3.0, 0.4)), ((-0.5, -0.4), (3.0, -0.4)),
+               ((3.0, -0.4), (3.0, 0.4))]
+    sim = Sim(paredes, start=(2.6, 0.0, 0.0))
+    d.iniciar(sim.odom, *sim.scan())
+    d.ancho = 0.80
+    r, a = sim.scan()
+    pose = d.piloto.pose(sim.odom)
+    assert not d._lado_abierto_amplio(r, a, pose, "izq")
+    hueco = np.abs(nc_wrap(a - math.radians(60.0))) < math.radians(5.0)
+    assert not d._lado_abierto_amplio(r[~hueco], a[~hueco], pose, "izq")
+
+
+@pytest.mark.parametrize("corrido", [0.15, -0.15])
+def test_senal_lateral_se_mide_desde_el_eje_aunque_el_robot_vaya_corrido(corrido):
+    # pasillo de 0.75 m; robot corrido 15 cm; cartel en la pared derecha a 1.0 m del fondo
+    paredes = [((-0.5, -0.375), (-0.5, 0.375)), ((-0.5, 0.375), (4.0, 0.375)),
+               ((-0.5, -0.375), (4.0, -0.375)), ((4.0, -0.375), (4.0, 0.375))]
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    sim = Sim(paredes, start=(2.2, corrido, 0.0))
+    d.iniciar(sim.odom, *sim.scan())
+    d.ancho, d._ancho_n = 0.75, 5
+    r, a = sim.scan()
+    for lado_y in (0.375, -0.375):
+        s, _ = ver(sim.true, [("prohibido", (3.2, lado_y), (0.0, -1.0 if lado_y > 0 else 1.0))], paredes,
+                   ang_max_deg=85.0)
+        assert s, "la camara simulada no ve el cartel"
+        assert d._prohibido_lateral(s[0], ANCHO, d.piloto.pose(sim.odom), r, a), (corrido, lado_y, d.eventos)
+
+
+def test_tras_un_giro_no_decide_con_el_scan_viejo():
+    """config_agresivo a 0.90 m con LiDAR atrasado: obedecia la flecha en la esquina 2 y 1.1 s
+    despues, en el mismo punto, decidia otra vez con el scan de antes del giro y se volvia."""
+    import json
+    import bench_directo as bd
+    import pista_video as pv
+    with open(os.path.join(ROOT, "config_agresivo.json"), encoding="utf-8") as f:
+        ajustes = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    paredes, objetos = pv.circuito(0.90)
+    r = bd.simular(paredes, objetos, ajustes, latencia=2, retardo=3, ruido=0.01, deriva=0.03, cam=bd.CAM_REAL)
+    assert r["ok"] and r["choques"] == 0, r["d"].eventos
+    assert [x["accion"] for x in r["d"].decisiones] == ["izq", "izq", "der", "der", "der", "izq", "izq"]
