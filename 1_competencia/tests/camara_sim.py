@@ -56,8 +56,13 @@ def ver(pose, objetos, paredes, alcance=2.6, lado=0.12, cara_ancho=0.15, ang_max
             cara = max(cara, cara_ancho * f / d / ANCHO_)
             continue
         px = max(4, int(lado * f / d))
+        color = None
+        if tipo.endswith("_roja"):                 # p. ej. "der_roja": flecha en circulo rojo
+            tipo, color = tipo[:-5], "rojo"
+        elif tipo in ("izq", "der"):
+            color = "azul"
         senales.append(Senal(tipo, 0.9, (int(cx - px / 2), 200, px, px),
                              texto=f"hito_{xy[0]:.1f}_{xy[1]:.1f}" if tipo == "qr" else None,
-                             distancia_m=d))
+                             distancia_m=d, color=color))
     senales.sort(key=lambda s: -(s.bbox[2] * s.bbox[3]))
     return senales, cara

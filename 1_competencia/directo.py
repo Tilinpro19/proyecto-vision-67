@@ -99,7 +99,11 @@ class DirectoParams:
     # no cierra el camino de frente: solo cuenta si queda cerca del eje del pasillo.
     prohibido_borde: float = 0.15  # m  lateral > max(0.15, ancho/2 - esto) -> lateral, se ignora
     lateral_antes_frente: float = 0.30  # m  ...y a mas de esto antes de la pared del frente
-    flechas_solo_frente: bool = True  # el mismo filtro para flechas (video: flecha impresa en una caja lateral)
+    flechas_solo_frente: bool = True
+    # "Copia de senales.docx" trae flechas ROJAS ademas de azules. Significado sin confirmar (en
+    # transito rojo = prohibicion): por defecto se ignoran (cuesta a lo sumo tiempo; obedecer un
+    # "no gires" seria peor). "obedecer" = como una azul.
+    flecha_roja: str = "ignorar"  # el mismo filtro para flechas (video: flecha impresa en una caja lateral)
     # Tras cada giro: rumbo de la odometria corregido UNA vez con las dos paredes del pasillo
     # (en 0.57 m, 10-15 grados de deriva tras la media vuelta dejan al robot contra una pared)
     rumbo_paredes: bool = True
@@ -213,6 +217,7 @@ class PilotoDirecto:
         self.decisiones = []          # dict(t, pose, opciones, senal, accion)
         self.qrs = []
         self._prohibidos_lat = set()
+        self._roja_avisada = False
 
     # --- API ------------------------------------------------------------------
     def iniciar(self, odom_pose, ranges, angles):
@@ -244,6 +249,12 @@ class PilotoDirecto:
                 vio_bandera = d is None or d <= self.dp.d_bandera
             elif s.tipo == "prohibido" and (hay_bandera or self._prohibido_lateral(s, ancho_img, pose, r, a)):
                 continue     # la bandera manda / letrero al costado: no cierra el frente
+            elif (s.tipo in ("izq", "der") and getattr(s, "color", None) == "rojo"
+                  and self.dp.flecha_roja != "obedecer"):
+                if not self._roja_avisada:
+                    self._roja_avisada = True
+                    self.eventos.append(f"flecha ROJA '{s.tipo}' ignorada (flecha_roja={self.dp.flecha_roja})")
+                continue
             elif (s.tipo in ("izq", "der") and self.dp.flechas_solo_frente
                   and self._prohibido_lateral(s, ancho_img, pose, r, a)):
                 continue     # flecha al costado (caja impresa): no es la del cruce

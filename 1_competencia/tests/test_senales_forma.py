@@ -198,7 +198,8 @@ def _luz(img, brillo, sat):
     return cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
-@pytest.mark.parametrize("archivo", ["flecha_azul_der_a.png", "flecha_azul_der_b.png"])
+@pytest.mark.parametrize("archivo", ["flecha_azul_der_a.png", "flecha_azul_der_b.png",
+                                     "flecha_azul_der_vector.png", "flecha_roja_der.png"])
 @pytest.mark.parametrize("flip,esperado", [(False, "der"), (True, "izq")])
 @pytest.mark.parametrize("luz", [(1.0, 1.0), (0.6, 1.0), (0.6, 0.5), (1.0, 0.5)])
 def test_flecha_azul_se_detecta_y_nunca_se_confunde(archivo, flip, esperado, luz):
@@ -213,6 +214,8 @@ def test_flecha_azul_se_detecta_y_nunca_se_confunde(archivo, flip, esperado, luz
             tipos = [s.tipo for s in sf.detectar(img)]
             assert esperado in tipos, f"{archivo} {esperado} a {d} m yaw {yaw} luz {luz}: {tipos}"
             assert not [t for t in tipos if t in ("izq", "der", "prohibido") and t != esperado], tipos
+            color = "rojo" if "roja" in archivo else "azul"
+            assert all(x.color == color for x in sf.detectar(img) if x.tipo == esperado)
 
 
 def test_prohibido_y_bandera_nuevos_se_detectan():
@@ -232,3 +235,25 @@ def test_objetos_azules_sin_flecha_no_son_senales():
     img[350:] = (200, 140, 60)
     tipos = [s.tipo for s in sf.detectar(img)]
     assert not [t for t in tipos if t in ("izq", "der")], tipos
+
+
+@pytest.mark.parametrize("archivo", ["circulo_azul_liso.png", "circulo_rojo_liso.png"])
+def test_circulos_de_color_lisos_no_son_flechas(archivo):
+    im, hoja = _hoja_color(archivo)
+    rng = np.random.default_rng(0)
+    for d in (0.5, 0.9, 1.3):
+        img = rs.degradar(rs.proyectar(hoja, hoja.shape[1], 0.107 * hoja.shape[1] / im.shape[1], d, 640), rng=rng)
+        tipos = [x.tipo for x in sf.detectar(img)]
+        assert not [t for t in tipos if t in ("izq", "der", "prohibido")], (archivo, d, tipos)
+
+
+def test_flecha_impresa_en_escala_de_grises_tambien_se_detecta():
+    """Si la hoja se imprime en blanco y negro el azul queda gris medio (sin color que mapear)."""
+    im, hoja = _hoja_color("flecha_azul_der_b.png")
+    gris = cv2.cvtColor(cv2.cvtColor(hoja, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+    rng = np.random.default_rng(0)
+    vistas = []
+    for d in (0.5, 0.8, 1.1):
+        img = rs.degradar(rs.proyectar(gris, gris.shape[1], 0.107 * gris.shape[1] / im.shape[1], d, 640), rng=rng)
+        vistas.append([x.tipo for x in sf.detectar(img)])
+    assert all("der" in v for v in vistas), vistas

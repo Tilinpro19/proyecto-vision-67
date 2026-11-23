@@ -603,3 +603,18 @@ def test_preview_cuadrado_usa_el_fov_recortado():
     assert math.isclose(math.degrees(abs(d._rumbo_senal(borde, 250))), 17.6, abs_tol=1.0)   # ~37/2
     d.ver_senales(0.0, [], 640, sim.odom, r, a, alto_img=360)
     assert math.isclose(math.degrees(abs(d._rumbo_senal(borde, 640))), 9.2, abs_tol=1.0)   # 75 px a 69 grados
+
+
+@pytest.mark.parametrize("politica", ["ignorar", "obedecer"])
+def test_flecha_roja_se_ignora_por_defecto(politica):
+    # cruce con salidas a ambos lados y una flecha ROJA "izq" en la pared del fondo
+    objetos = [("izq_roja", (3.0, 0.0), IZQ_X), ("cara", (2.6, 2.4), (0.0, -1.0)),
+               ("cara", (2.6, -2.4), (0.0, 1.0))]
+    res = simular_directo(_cruz(0.80), objetos, t_max=120.0, dp_extra=dict(flecha_roja=politica))
+    d = res["d"]
+    assert d.decisiones, d.eventos
+    if politica == "ignorar":
+        assert d.decisiones[0]["senal"] is None, d.decisiones
+        assert any("flecha ROJA" in e for e in d.eventos), d.eventos
+    else:
+        assert d.decisiones[0]["senal"] == "izq" and d.decisiones[0]["accion"] == "izq"
