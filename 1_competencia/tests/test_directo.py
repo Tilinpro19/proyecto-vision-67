@@ -709,3 +709,20 @@ def test_tras_un_giro_no_decide_con_el_scan_viejo():
     r = bd.simular(paredes, objetos, ajustes, latencia=2, retardo=3, ruido=0.01, deriva=0.03, cam=bd.CAM_REAL)
     assert r["ok"] and r["choques"] == 0, r["d"].eventos
     assert [x["accion"] for x in r["d"].decisiones] == ["izq", "izq", "der", "der", "der", "izq", "izq"]
+
+
+@pytest.mark.parametrize("cfg", ["config.json", "config_rapido.json", "config_agresivo.json"])
+def test_caja_que_sobresale_vuelve_a_a_en_condiciones_duras(cfg):
+    """La ida rodeaba la caja con margen chico (rescate) pero el regreso por migas usaba los
+    margenes de config.json y quedaba trabado en el mismo hueco: nunca volvia a A."""
+    import json
+    import bench_directo as bd
+    with open(os.path.join(ROOT, cfg), encoding="utf-8") as f:
+        ajustes = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    objetos = [("izq", (2.65, 0.0), IZQ_X), ("cara", (2.6, 2.4), (0.0, -1.0))]
+    for deriva in (0.03, -0.03):
+        r = bd.simular(_caja_en_el_fondo(0.35), objetos, ajustes, latencia=2, retardo=3, ruido=0.01,
+                       deriva=deriva, cam=bd.CAM_REAL, t_max=240.0)
+        assert r["ok"] and r["choques"] == 0, (deriva, r["d"].eventos)
+        assert r["holgura"] > ms.MisionParams().choque_dist
+        assert math.hypot(*r["true"][:2]) < 0.35

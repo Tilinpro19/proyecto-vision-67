@@ -113,6 +113,7 @@ class DirectoParams:
     rescate: bool = True
     rescate_extra: float = 0.30  # m  rayo libre mas alla de donde estaria la pared lateral
     rescate_min: float = 0.60    # m  y al menos esto libre
+    rescate_radio: float = 1.0   # m  al volver, a menos de esto de un rescate: margen chico
     # Tras cada giro: rumbo de la odometria corregido UNA vez con las dos paredes del pasillo
     # (en 0.57 m, 10-15 grados de deriva tras la media vuelta dejan al robot contra una pared)
     rumbo_paredes: bool = True
@@ -230,6 +231,7 @@ class PilotoDirecto:
         self._rescatados = set()
         self._t_fin_giro = -1e9
         self._rescate_xy = None
+        self._puntos_rescate = []     # donde se rodeo una caja: al volver, mismo margen chico
         self._respaldo_tras_giro = False
 
     # --- API ------------------------------------------------------------------
@@ -609,15 +611,19 @@ class PilotoDirecto:
         pp.max_linear = self.dp.v_regreso
         restaurar = lambda: None  # noqa: E731
         estrecho = self.ancho < self.dp.ancho_estrecho
-        if estrecho or self._dist_a < self.dp.cerca_a:
+        # cerca de donde la ida rodeo una caja (rescate): el hueco solo se pasa con el margen
+        # chico con que se paso a la ida; con los de config.json Piloto quedaba trabado ahi
+        pose = self.piloto.pose(odom_pose)
+        rescate = any(math.dist(pose[:2], q) < self.dp.rescate_radio for q in self._puntos_rescate)
+        if estrecho or rescate or self._dist_a < self.dp.cerca_a:
             restaurar = self._margen_chico()
-            if estrecho:
+            if estrecho or rescate:
                 pp.max_linear = min(pp.max_linear, self.dp.v_estrecho)
             if self._dist_a < self.dp.cerca_a:
                 pp.max_linear = min(pp.max_linear, max(self.dp.v_cerca, 0.25 * self._dist_a + 0.05))
         nav = self.piloto.nav
         slow = nav.slow_dist
-        if estrecho or self._dist_a < self.dp.cerca_a:
+        if estrecho or rescate or self._dist_a < self.dp.cerca_a:
             nav.slow_dist = max(nav.stop_dist + 0.1, min(slow, self.dp.slow_dist_recto))
         try:
             lin, ang, info = self.piloto.paso(t, odom_pose, ranges, angles, bumper_hit=bumper_hit)
@@ -903,6 +909,7 @@ class PilotoDirecto:
             lado = min(lados, key=lambda l: (vis_rel.get(l, 0), l != "izq"))
             por = "el LiDAR"
         self._rescatados.add(key)
+        self._puntos_rescate.append((pose[0], pose[1]))
         self.eventos.append(f"callejon aparente: salgo por {lado} (por {por}; Piloto rodea la esquina)")
         return lado
 
