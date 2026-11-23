@@ -49,7 +49,16 @@ def escenarios():
     return e
 
 
-def simular(paredes, objetos, ajustes, latencia, retardo, ruido, deriva, seed=0, t_max=400.0, dt=0.1):
+# Camara del robot: preview 250x250 recortado (~37 grados), alcance del detector medido con las
+# senales nuevas (azules) a esa resolucion, y 30 % de cuadros en que no ve la senal.
+CAM_IDEAL = dict(ancho=640, fov=69.0, alcance=2.6, perdida=0.0)
+CAM_REAL = dict(ancho=250, fov=37.0, perdida=0.3,
+                alcance={"izq": 1.3, "der": 1.3, "prohibido": 2.0, "bandera": 1.0, "qr": 0.6, "cara": 2.6})
+
+
+def simular(paredes, objetos, ajustes, latencia, retardo, ruido, deriva, seed=0, t_max=400.0, dt=0.1,
+            cam=None):
+    cam = cam or CAM_IDEAL
     rng = np.random.default_rng(seed)
     sim = Sim(paredes, yaw_drift=deriva, scan_retardo=retardo)
     piloto, mp, dp = Piloto(), ms.MisionParams(), dr.DirectoParams()
@@ -68,9 +77,11 @@ def simular(paredes, objetos, ajustes, latencia, retardo, ruido, deriva, seed=0,
         if fase == "ida":
             if t - t_cam >= mp.cam_periodo:
                 t_cam = t
-                senales, cara = ver(sim.true, objetos, paredes)
+                senales, cara = ver(sim.true, objetos, paredes, alcance=cam["alcance"], ancho=cam["ancho"],
+                                    fov=cam["fov"], perdida=cam["perdida"], rng=rng)
                 d.ver_caras(t, cara)
-                d.ver_senales(t, senales, ANCHO, sim.odom, r, a)
+                d.ver_senales(t, senales, cam["ancho"], sim.odom, r, a,
+                              alto_img=cam["ancho"] if cam["ancho"] == 250 else None)
             lin, ang, info = d.paso(t, sim.odom, r, a)
             est = d.estado
             if info["accion"] == "llegada_b":
@@ -114,11 +125,11 @@ def aceptable(f):
     return f["ok"] and f["choques"] == 0 and f["holgura"] >= HOLGURA_MIN and f["err_A"] < 0.35
 
 
-def correr(nombre, ajustes, escs, condiciones):
+def correr(nombre, ajustes, escs, condiciones, cam=None):
     filas = []
     for en, (paredes, objetos) in escs.items():
         for cn, (lat, ret, ruido, deriva) in condiciones.items():
-            r = simular(paredes, objetos, ajustes, lat, ret, ruido, deriva)
+            r = simular(paredes, objetos, ajustes, lat, ret, ruido, deriva, cam=cam)
             te = r["t_estado"]
             filas.append(dict(perfil=nombre, escenario=en, condicion=cn, ok=r["ok"],
                               t=round(r["t"], 1), t_ida=round(r["t_b"] or 0.0, 1),
@@ -134,17 +145,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv")
     ap.add_argument("--perfil", help="k=v,k=v (corre solo este)")
+    ap.add_argument("--cam-ideal", action="store_true", help="camara perfecta de 640 px (como antes)")
     args = ap.parse_args()
+    cam = CAM_IDEAL if args.cam_ideal else CAM_REAL
     perfiles = PERFILES
     if args.perfil:
         perfiles = {args.perfil: dict(kv.split("=") for kv in args.perfil.split(","))}
     escs = escenarios()
     todas = []
     print(f"acepta: ok, 0 choques, holgura >= {HOLGURA_MIN:.2f} m, error en A < 0.35 m | "
-          f"condiciones {CONDICIONES}")
+          f"condiciones {CONDICIONES} | camara {cam}")
     for nombre, aj in perfiles.items():
         t0 = time.time()
-        filas = correr(nombre, aj, escs, CONDICIONES)
+        filas = correr(nombre, aj, escs, CONDICIONES, cam)
         todas += filas
         ok = all(aceptable(f) for f in filas)
         por = {}
