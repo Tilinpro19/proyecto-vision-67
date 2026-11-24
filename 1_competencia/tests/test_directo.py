@@ -188,8 +188,23 @@ def test_zigzag_con_flechas_ignora_hueco_y_llega_a_las_caras():
     assert [x["accion"] for x in d.decisiones] == ["izq", "izq"]
     assert all(x["motivo"] == "flecha" for x in d.decisiones)
     assert d.motivo_llegada == "caras al frente"
-    # no gira al ver la flecha: llega hasta d_min (0.30 m) de la pared donde esta (x=3.6)
-    assert d.decisiones[0]["pose"][0] > 3.6 - d.dp.d_min - 0.06
+    # no gira al ver la flecha: llega al centro del cruce (pasillo ANCHO: ya no se pega hasta d_min
+    # de la pared de la flecha, que era acercarse de mas; pista 23-nov)
+    x_giro = 3.6 - min(0.5 * d.ancho + 0.03, d.dp.d_giro)
+    assert abs(d.decisiones[0]["pose"][0] - x_giro) < 0.10, (d.decisiones[0]["pose"], d.ancho)
+
+
+def test_cara_chica_del_publico_no_es_b_pero_la_foto_grande_si():
+    """23-nov: (1) perfil agresivo, una cara del PUBLICO (chica, detras de la pared) con el frente
+    cerrado hizo declarar B en la 4a de 6 esquinas; (2) la B real tiene una abertura lateral y la
+    regla "solo sin salida lateral" ignoro las fotos de B. Con salida lateral cuenta solo una cara
+    grande (foto en la pared del frente)."""
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    d.ver_caras(10.0, 0.10)                     # publico: cuenta para MIRAR, no para llegar con salida
+    assert d.t_cara == 10.0 and d.t_cara_grande < 0
+    d.ver_caras(11.0, 0.35)                     # foto a ~0.6 m
+    assert d.t_cara_grande == 11.0
 
 
 def test_zigzag_sin_flechas_dobla_esquinas_con_el_lidar():
@@ -373,7 +388,7 @@ def test_giro_en_el_sitio_es_cardinal_y_no_acelera_de_golpe():
 
 
 def test_giro_trabado_no_bloquea_la_mision():
-    # odometria que no gira (rueda trabada): tras factor_timeout x lo esperado sigue en RECTO
+    # odometria que no gira (rueda trabada): sin avanzar t_giro_sin_avance s -> sigue en RECTO
     paredes = pista_zigzag()
     piloto, mp, dp = _piloto_config()
     d = dr.PilotoDirecto(piloto, mp, dp)
@@ -384,7 +399,7 @@ def test_giro_trabado_no_bloquea_la_mision():
     while d.estado == dr.GIRAR and t < 30.0:
         d.paso(t, sim.odom, *sim.scan())      # no se aplica el giro: el robot no rota
         t += 0.1
-    esperado = dp.factor_timeout * (math.pi / 2 / dp.w_giro + 1.0)
+    esperado = dp.t_giro_sin_avance
     assert d.estado == dr.RECTO
     assert esperado - 0.2 <= t <= esperado + 0.3
     assert any("giro sin terminar" in e for e in d.eventos)
@@ -455,6 +470,24 @@ def test_regreso_trabado_en_la_zona_de_a_declara_llegada():
     d2._llegada_por_zona(0.0, salida(1.5))
     d2._llegada_por_zona(0.5, salida(0.8))
     assert not d2._llegada_por_zona(20.0, salida(0.8))[2]["llegada"]
+
+
+def test_giro_del_regreso_trabado_pasa_a_migas():
+    """El giro en el sitio del regreso por tramos no tenia timeout (la ida si): con una rueda
+    trabada se quedaba girando hasta t_max. Ahora cae a migas (Piloto con escape)."""
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    r, a = scan_from(_t_con_salida_lateral(), (1.0, 0.0, 0.0))
+    d.iniciar((0.0, 0.0, 0.0), r, a)
+    odom = (1.0, 0.0, 0.0)       # nunca gira: la media vuelta de B no termina
+    lin, ang, _ = d.regreso(0.0, odom, r, a)
+    assert d.modo_regreso == "tramos" and lin == 0.0 and ang != 0.0
+    t_max = dp.t_giro_sin_avance          # trabado = sin avanzar 5 grados en este tiempo
+    d.regreso(t_max - 0.5, odom, r, a)
+    assert d.modo_regreso == "tramos"
+    d.regreso(t_max + 0.5, odom, r, a)
+    assert d.modo_regreso == "migas"
+    assert any("giro del regreso sin terminar" in e for e in d.eventos)
 
 
 @pytest.mark.parametrize("v", [0.20, 0.26, 0.30])
@@ -709,3 +742,76 @@ def test_tras_un_giro_no_decide_con_el_scan_viejo():
     r = bd.simular(paredes, objetos, ajustes, latencia=2, retardo=3, ruido=0.01, deriva=0.03, cam=bd.CAM_REAL)
     assert r["ok"] and r["choques"] == 0, r["d"].eventos
     assert [x["accion"] for x in r["d"].decisiones] == ["izq", "izq", "der", "der", "der", "izq", "izq"]
+
+
+@pytest.mark.parametrize("cfg", ["config.json", "config_rapido.json", "config_agresivo.json"])
+def test_caja_que_sobresale_vuelve_a_a_en_condiciones_duras(cfg):
+    """La ida rodeaba la caja con margen chico (rescate) pero el regreso por migas usaba los
+    margenes de config.json y quedaba trabado en el mismo hueco: nunca volvia a A."""
+    import json
+    import bench_directo as bd
+    with open(os.path.join(ROOT, cfg), encoding="utf-8") as f:
+        ajustes = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    objetos = [("izq", (2.65, 0.0), IZQ_X), ("cara", (2.6, 2.4), (0.0, -1.0))]
+    for deriva in (0.03, -0.03):
+        r = bd.simular(_caja_en_el_fondo(0.35), objetos, ajustes, latencia=2, retardo=3, ruido=0.01,
+                       deriva=deriva, cam=bd.CAM_REAL, t_max=240.0)
+        assert r["ok"] and r["choques"] == 0, (deriva, r["d"].eventos)
+        assert r["holgura"] > ms.MisionParams().choque_dist
+        assert math.hypot(*r["true"][:2]) < 0.35
+
+
+def test_giro_fluido_avanza_en_arco_y_frena_ante_un_obstaculo():
+    """arco_radio > 0: la esquina se dobla avanzando (lin = R*w, sin pasar vmax) en vez de parar
+    y girar en el sitio; con algo en la franja del frente la lineal cae a 0 (sigue girando)."""
+    piloto, mp, dp = _piloto_config()
+    dp.arco_radio = 0.25
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    d._lin_prev = 0.30                      # venia a velocidad de crucero
+    a = np.linspace(-math.pi, math.pi, 360, endpoint=False)
+    libre = np.full(360, 3.0)
+    lin, w = d._cmd_giro(0.0, math.pi / 2, 0.25, 0.30, libre, a)
+    assert lin == pytest.approx(0.30) and w == pytest.approx(0.30 / 0.25)
+    lin0, w0 = d._cmd_giro(0.1, math.pi / 2, 0.0, 0.30, libre, a)   # en el sitio
+    assert lin0 == 0.0 and w0 == pytest.approx(dp.w_giro)
+    pared = np.where(np.abs(a) < 0.3, 0.25, 3.0)                     # algo a 0.25 m al frente
+    lin, w = d._cmd_giro(0.2, math.pi / 2, 0.25, 0.30, pared, a)
+    assert lin < 0.02 and w > 0
+    # el radio nunca pasa de ancho/2 (libra la esquina interior) ni de lo que falta al cruce
+    d.ancho = 0.56
+    assert d._radio_arco(1.0) == pytest.approx(0.25) and d._radio_arco(0.1) == pytest.approx(0.1)
+    d.ancho = 0.40
+    assert d._radio_arco(1.0) == pytest.approx(0.20)
+
+
+def test_regreso_sin_lazos_con_la_ruta_real_del_23_nov():
+    """Ida real (pista 23-nov): en la esquina 5 tomo la izquierda (bolsillo), dio la vuelta (6, 7, 8)
+    y volvio a pasar por 4 y 5. El regreso por tramos repetia los 11 giros (48 s, antes 27 s)."""
+    S, E, N, O = -math.pi / 2, 0.0, math.pi / 2, math.pi
+    poses = [((0.80, -0.05), E, S), ((0.81, -0.98), S, O), ((0.02, -1.07), O, S), ((-0.01, -1.99), S, E),
+             ((0.59, -2.15), E, N), ((0.77, -1.80), N, O), ((0.13, -1.85), O, S), ((-0.09, -2.04), S, E),
+             ((0.60, -2.05), E, S), ((0.57, -3.20), S, O), ((0.22, -3.21), O, S)]
+    ruta = [dict(xy=xy, de=de, a=a) for xy, de, a in poses]
+    limpia = dr.sin_lazos(ruta)
+    assert [g["xy"] for g in limpia] == [(0.80, -0.05), (0.81, -0.98), (0.02, -1.07), (-0.01, -1.99),
+                                         (0.60, -2.05), (0.57, -3.20), (0.22, -3.21)]
+    assert limpia[3]["de"] == S and limpia[3]["a"] == E        # entra al sur, sale al este (como la 8)
+    assert dr.sin_lazos(ruta[:4]) == ruta[:4]                  # sin lazos no cambia nada
+
+
+def test_giro_lento_pero_avanzando_no_se_corta():
+    """Pista 23-nov: con el ciclo de la Pi a 325 ms el giro avanzaba lento y el timeout fijo (5.8 s)
+    lo corto faltando 24 grados -> Piloto, rumbo torcido y decisiones en mal lugar. Ahora solo se
+    corta si deja de avanzar t_giro_sin_avance."""
+    piloto, mp, dp = _piloto_config()
+    d = dr.PilotoDirecto(piloto, mp, dp)
+    prog, t, err = None, 0.0, math.pi / 2
+    while err > math.radians(dp.tol_giro_deg):
+        prog, trabado, _ = d._progreso_giro(prog, t, err)
+        assert not trabado, (t, math.degrees(err))
+        t, err = t + 0.3, err - math.radians(4.0)         # 13 grados/s: lento pero avanza
+    assert t > dp.factor_timeout * (math.pi / 2 / dp.w_giro + 1.0)   # el timeout viejo ya lo habria cortado
+    prog, trabado, lento = d._progreso_giro(None, 0.0, 1.0)
+    for k in range(1, 10):
+        prog, trabado, lento = d._progreso_giro(prog, k * 0.3, 1.0)   # no avanza nada
+    assert trabado and lento

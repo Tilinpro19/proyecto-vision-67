@@ -72,10 +72,18 @@ class MisionParams:
     cam_periodo: float = 0.20             # s entre lecturas de senales en modo guiado (ahorro CPU Pi)
     # Busqueda multi-persona + QR en B (cuando --persona se indica al inicio del circuito)
     persona: str = ""                     # nombre objetivo a buscar en B (vacio = modo clasico de 1 cara)
-    escaneo_frames_persona: int = 6       # frames con cara por cada persona al barrer en B
+    escaneo_frames_persona: int = 3       # frames con cara por cada persona (identificar promedia los 3 mejores)
+    escaneo_t_cara: float = 2.0           # s   maximo parado frente a cada cara (despues de asentar)
+    escaneo_asentar: float = 0.4          # s   quieto antes de tomar cuadros (recien parado salen movidos: 0.33 vs 0.58)
+    escaneo_w: float = 0.8                # rad/s girando en B sin cara nueva a la vista (cerca de una, frena al centrarla)
     escaneo_objetivo_max: float = 45.0    # s   maximo barriendo 360 y leyendo QR en B
-    qr_barrido_max: float = 8.0           # s   maximo buscando el QR al costado de la persona objetivo
-    sector_visto_rad: float = 0.65        # rad (~37 deg) margen angular para no re-escanear la misma cara
+    qr_barrido_max: float = 3.0           # s   maximo buscando el QR al costado de la persona objetivo
+    # Las ~4 caras de B estan juntas (~30 cm entre si a ~1 m = ~17 grados): cada cara se marca por
+    # SU rumbo (yaw + rumbo en la imagen), no por el del robot, y con un margen menor que esa separacion
+    sector_visto_rad: float = 0.15        # rad (~9 deg; > 2x la tolerancia de centrado) para no re-escanear la misma cara
+    # (probado con YuNet+SFace reales: 4/4 caras distintas a >= 13 grados entre si; a 11 se tapan)
+    cara_centro_frac: float = 0.12        # para a escanear solo con la cara a < esto (fraccion del ancho) del centro
+    k_centrar_cara: float = 1.5           # rad/s por rad: gira hacia la cara nueva hasta tenerla de frente
 
 
 def drenar(spin_once, periodo, reloj=time.monotonic):
@@ -127,6 +135,8 @@ class Mision:
         self.nombre, self.score, self.seguro = None, 0.0, False
         self.objetivo, self.qr_objetivo = None, None
         self.foto_img, self.foto_face, self.foto_path = None, None, None
+        self.foto = None              # JPG del reconocimiento (cara marcada + nombre + score)
+        self.transiciones = []        # dict(t, estado, motivo): tiempos de ida / escaneo / regreso
         self.log_dir = log_dir
         self._diag_seq = 0
         self.log_path = None
@@ -158,6 +168,7 @@ class Mision:
         if estado in (FIN, PARADA) and self.t_fin is None and self.t0 is not None:
             self.t_fin = self.clock()
         anterior, self.estado = self.estado, estado
+        self.transiciones.append(dict(t=round(self.tiempo(), 2), estado=estado, motivo=motivo))
         self.evento(f"{anterior} -> {estado}" + (f" ({motivo})" if motivo else ""))
 
     def activa(self):
@@ -205,13 +216,44 @@ class Mision:
         self.evento(f"diagnostico guardado: {nombre}")
         return ruta
 
+    def guardar_foto(self, img, nombre, score, seguro, caja=None):
+        """Captura del reconocimiento en logs/: el cuadro de la camara con la cara marcada, el
+        nombre, el score y SEGURO/DUDOSO (evidencia para el informe). Devuelve la ruta o None."""
+        if img is None or not self.log_dir:
+            return None
+        try:
+            import cv2
+            out = img.copy()
+            color = (0, 200, 0) if seguro else (0, 165, 255)
+            if caja is not None:
+                x, y, w, h = (int(round(v)) for v in caja)
+                cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
+            h_img, w_img = out.shape[:2]
+            esc = max(0.4, w_img / 640.0)
+            texto = f"{nombre or '?'} {score:.2f} {'SEGURO' if seguro else 'DUDOSO'}"
+            cv2.rectangle(out, (0, h_img - int(28 * esc)), (w_img, h_img), (0, 0, 0), -1)
+            cv2.putText(out, texto, (4, h_img - int(8 * esc)), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * esc,
+                        color, max(1, int(2 * esc)))
+            base = os.path.splitext(os.path.basename(self.log_path))[0] if self.log_path else f"mision_{self.tarea}"
+            ruta = os.path.join(self.log_dir, f"{base}_reconocido_{nombre or 'nadie'}"
+                                f"{'' if seguro else '_dudoso'}.jpg")
+            if not cv2.imwrite(ruta, out):
+                return None
+        except Exception as e:   # la foto es evidencia: nunca debe tumbar la mision
+            self.evento(f"no pude guardar la foto del reconocimiento: {e}")
+            return None
+        self.foto = ruta
+        self.evento(f"foto del reconocimiento: {ruta}")
+        return ruta
+
     def resultado(self):
         return dict(tarea=self.tarea, ok=self.estado == FIN, estado=self.estado,
                     tiempo=round(self.tiempo(), 2), choques=self.choques, nombre=self.nombre,
-                    score=round(self.score, 3), seguro=self.seguro,
+                    score=round(self.score, 3), seguro=self.seguro, foto=self.foto,
                     objetivo=self.objetivo, qr_objetivo=self.qr_objetivo,
                     senales=self.senales, decisiones=self.decisiones, hitos_qr=self.hitos_qr,
-                    perfil=self.perfil.resumen())
+                    perfil=self.perfil.resumen(), transiciones=self.transiciones,
+                    eventos=self.eventos, log=self.log_path)
 
     def cerrar(self):
         if self.log:
@@ -288,6 +330,19 @@ class Escaneo:
         return (self.mp.busqueda_angular if n % 2 == 0 else -self.mp.busqueda_angular), None
 
 
+def norm_nombre(nombre):
+    """'Thiago Frías' / 'thiago_frias' / 'Thiago-Frias' -> 'thiago_frias' (galeria = carpetas)."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(nombre)).encode("ascii", "ignore").decode()
+    return "_".join(s.replace("-", " ").replace("_", " ").split()).casefold()
+
+
+def resolver_persona(persona, nombres):
+    """Nombre de la galeria que corresponde a `persona`, o None si no esta."""
+    objetivo = norm_nombre(persona)
+    return next((n for n in nombres or () if norm_nombre(n) == objetivo), None)
+
+
 class EscaneoObjetivo:
     """Barrido 360 en B cuando se busca una persona especifica y su QR al costado.
     Gira revisando cada cara en sectores no visitados; al hallar al objetivo,
@@ -295,8 +350,8 @@ class EscaneoObjetivo:
 
     def __init__(self, objetivo, rostros, galeria, mp, t0, yaw0=0.0, umbral=None,
                  qr_fn=None, identificar_fn=None):
-        self.objetivo = str(objetivo).strip()
-        self.objetivo_norm = self.objetivo.lower()
+        self.objetivo = resolver_persona(objetivo, getattr(galeria, "nombres", None)) or str(objetivo).strip()
+        self.objetivo_norm = norm_nombre(self.objetivo)
         self.rostros, self.galeria, self.mp = rostros, galeria, mp
         self.t0 = t0
         self.limite = mp.escaneo_objetivo_max
@@ -323,6 +378,9 @@ class EscaneoObjetivo:
         self._ultima_img_obj = None
         self._ultima_face_obj = None
         self.eventos = []           # mensajes informativos para Mision.evento()
+        self._fotos = {}            # yaw de cada cara -> (cuadro completo, caja de la cara)
+        self._completos = []        # cuadros completos de la cara en curso (para su QR)
+        self._necesarios, self._reintento = self.frames_por_cara, False
 
     def _qr_en_imagen(self, img):
         if img is None:
@@ -344,6 +402,35 @@ class EscaneoObjetivo:
         self._ultima_face_obj = face_obj
         return res
 
+    def _caras(self, img, yaw):
+        """Caras del cuadro con su rumbo en el mundo: dict(yaw, b, off, x0, x1) (x en px del cuadro
+        original; off = corrida del centro de la imagen, fraccion del ancho)."""
+        big, faces = self.rostros.detectar(img)
+        if not len(faces):
+            return []
+        w_big = big.shape[1]
+        esc = img.shape[1] / float(w_big)
+        # preview cuadrado de la OAK-D: ~37 grados (ver DirectoParams.fov_cuadrado_deg)
+        fov = math.radians(37.0 if abs(img.shape[0] - img.shape[1]) <= 2 else 69.0)
+        f = (w_big / 2.0) / math.tan(fov / 2.0)
+        out = []
+        for c in faces:
+            cx = float(c[0]) + float(c[2]) / 2.0
+            b = math.atan2(w_big / 2.0 - cx, f)
+            out.append(dict(yaw=nc.wrap(yaw + b), b=b, off=(cx - w_big / 2.0) / w_big,
+                            x0=float(c[0]) * esc, x1=(float(c[0]) + float(c[2])) * esc,
+                            caja=tuple(float(v) * esc for v in c[:4])))
+        return out
+
+    @staticmethod
+    def _recorte(img, c):
+        """Solo la cara elegida (con margen): identificar() usa la cara MAS GRANDE del cuadro y
+        con varias caras a la vista podia reconocer a la vecina."""
+        ancho = c["x1"] - c["x0"]
+        a = int(max(0, c["x0"] - 0.6 * ancho))
+        b = int(min(img.shape[1], math.ceil(c["x1"] + 0.6 * ancho)))
+        return img[:, a:b] if b - a >= 2 else img
+
     def _sector_ya_visto(self, yaw):
         return any(abs(nc.wrap(yaw - v)) < self.mp.sector_visto_rad for v in self.sectores_vistos)
 
@@ -355,7 +442,7 @@ class EscaneoObjetivo:
         return qrs
 
     def _es_objetivo(self, res):
-        return bool(res.nombre and res.nombre.strip().lower() == self.objetivo_norm and res.n_caras > 0)
+        return bool(res.nombre and norm_nombre(res.nombre) == self.objetivo_norm and res.n_caras > 0)
 
     def _armar_resultado(self, yaw, res, qrs, encontrado):
         qr = qrs[0] if qrs else None
@@ -371,6 +458,7 @@ class EscaneoObjetivo:
             yaw=yaw,
             foto_img=self.foto_img if self.foto_img is not None else self._ultima_img_obj,
             foto_face=self.foto_face if self.foto_face is not None else self._ultima_face_obj,
+            foto=self._fotos.get(yaw),
             vistos=[(y, r.nombre, r.score, r.seguro, qs) for y, r, qs in self.vistos],
         )
 
@@ -407,25 +495,51 @@ class EscaneoObjetivo:
                 self.eventos.append(f"fin barrido 360 (vistos={len(self.vistos)})")
                 return 0.0, self._resultado_final()
             if img is not None:
-                _, faces = self.rostros.detectar(img)
-                if len(faces) and not self._sector_ya_visto(yaw):
-                    self.subestado = "RECOLECTAR"
-                    self.t_sub = t
-                    self.sector_yaw = yaw
-                    self.frames = [img]
-                    self.qrs_sector = []
-                    self._revisar_qr(img)
-                    return 0.0, None
-            return self.mp.busqueda_angular, None
+                nuevas = [c for c in self._caras(img, yaw) if not self._sector_ya_visto(c["yaw"])]
+                if nuevas:
+                    c = min(nuevas, key=lambda c: abs(c["b"]))
+                    if abs(c["off"]) <= self.mp.cara_centro_frac:
+                        # de frente a una cara nueva: parar y escanear SOLO esa
+                        self.subestado = "RECOLECTAR"
+                        self.t_sub = t
+                        self.sector_yaw = c["yaw"]
+                        self._fotos[c["yaw"]] = (img, c["caja"])   # para la captura del resultado
+                        # este cuadro sale movido (recien frena): se junta despues de asentar
+                        self.frames, self._completos = (([], []) if self.mp.escaneo_asentar > 0 else
+                                                        ([self._recorte(img, c)], [img]))  # QR: solo del objetivo
+                        self._necesarios, self._reintento = self.frames_por_cara, False
+                        self.qrs_sector = []
+                        self.eventos.append(f"cara {len(self.vistos) + 1} de frente (yaw={c['yaw']:.2f}): paro a escanear")
+                        return 0.0, None
+                    # cara nueva fuera del centro: girar hacia ella hasta tenerla de frente
+                    w = float(np.clip(self.mp.k_centrar_cara * c["b"], -self.mp.escaneo_w, self.mp.escaneo_w))
+                    return math.copysign(max(abs(w), 0.15), c["b"]), None
+            return self.mp.escaneo_w, None
 
         if self.subestado == "RECOLECTAR":
+            if t - self.t_sub < self.mp.escaneo_asentar:
+                return 0.0, None
             if img is not None:
-                _, faces = self.rostros.detectar(img)
-                if len(faces):
-                    self.frames.append(img)
-                    self._revisar_qr(img)
-            if len(self.frames) >= self.frames_por_cara or (t - self.t_sub) >= 3.0:
+                cs = [c for c in self._caras(img, yaw)
+                      if abs(nc.wrap(c["yaw"] - self.sector_yaw)) < self.mp.sector_visto_rad]
+                if cs:
+                    c = min(cs, key=lambda c: abs(nc.wrap(c["yaw"] - self.sector_yaw)))
+                    self.frames.append(self._recorte(img, c))
+                    self._completos.append(img)
+                    self._fotos[self.sector_yaw] = (img, c["caja"])   # la foto del resultado, ya quieto
+            if (len(self.frames) >= self._necesarios
+                    or (t - self.t_sub) >= self.mp.escaneo_asentar + self.mp.escaneo_t_cara):
                 res = self._identificar(self.frames)
+                if self._es_objetivo(res) and not res.seguro and not self._reintento:
+                    # parece la persona buscada pero dudoso: junta otros tantos cuadros antes de seguir
+                    self._reintento, self._necesarios = True, 2 * self.frames_por_cara
+                    self.t_sub = t - self.mp.escaneo_asentar
+                    self.eventos.append(f"{res.nombre} dudoso ({res.score:.2f}): junto mas cuadros")
+                    return 0.0, None
+                if self._es_objetivo(res):
+                    for im in self._completos:      # leer el QR (caro en la Pi) solo del objetivo
+                        if self._revisar_qr(im):
+                            break
                 self.sectores_vistos.append(self.sector_yaw)
                 self.vistos.append((self.sector_yaw, res, list(self.qrs_sector)))
                 if self._es_objetivo(res):
@@ -624,6 +738,14 @@ class Sistema:
             res.nombre = self.galeria.nombres[0]  # sin cara: algo hay que decir
             m.evento("no vi ninguna cara: digo el primero de la galeria")
         m.nombre, m.score, m.seguro = res.nombre, res.score, res.seguro
+        for fr in frames:
+            if fr is None:
+                continue
+            big, faces = self.rostros.detectar(fr)
+            if len(faces):
+                k = fr.shape[1] / float(big.shape[1])
+                m.guardar_foto(fr, res.nombre, res.score, res.seguro, caja=faces[0][:4] * k)
+                break
         top = ", ".join(f"{n} {s:.2f}" for n, s in res.ranking[:3])
         m.evento(f"identificado: {res.nombre} ({res.score:.2f}, "
                  f"{'seguro' if res.seguro else 'DUDOSO'}, {res.n_caras} frames) [{top}]")
@@ -734,6 +856,8 @@ def _procesar_escaneo(escaneo, s, m, t, img):
         m.qr_objetivo = res["qr"]
         m.foto_img = res.get("foto_img")
         m.foto_face = res.get("foto_face")
+        if res.get("foto"):
+            m.guardar_foto(res["foto"][0], m.nombre, m.score, m.seguro, caja=res["foto"][1])
         for q in res["qrs"]:
             if q not in m.hitos_qr:
                 m.hitos_qr.append(q)
@@ -1290,6 +1414,7 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
     m.ir(SEGUIR, f"modo directo (v_recto {dp.v_recto:.2f} m/s)")
     escaneo, t_cam, frente = None, -1e9, math.inf
     ultimo_img, n_dec = None, 0     # foto de cada decision para depurar (npz en logs/)
+    n_cam = 0                       # lecturas de senales: el QR (hito, no navega) solo 1 de cada 3
 
     while m.activa():
         s.spin(1.0 / mp.rate)
@@ -1308,7 +1433,10 @@ def tarea_a_directa(args, s, m, piloto, dp=None):
             r, a = s.lidar.data
             if img is not None and (t - t_cam) >= mp.cam_periodo:
                 t_cam = t
-                senales = sf.detectar(img, esfuerzo_qr=1, fov_deg=37.0 if img.shape[0] == img.shape[1] else 69.0) if sf.buscar_candidatos(img) else []
+                n_cam += 1
+                fov = dp.fov_cuadrado_deg if abs(img.shape[0] - img.shape[1]) <= 2 else dp.fov_deg
+                senales = (sf.detectar(img, esfuerzo_qr=1 if n_cam % 3 == 0 else 0, fov_deg=fov)
+                           if sf.buscar_candidatos(img) else [])
                 d.ver_senales(t, senales, img.shape[1], s.odom.pose, r, a, alto_img=img.shape[0])
                 # Caras solo cerca del fondo o mirando un callejon: en marcha cuestan CPU de la
                 # Pi y una cara del publico a un costado no debe cortar el recorrido.
@@ -1457,6 +1585,13 @@ def main():
     s = None
     try:
         s = Sistema(args, mp)
+        if mp.persona and args.tarea == "A":
+            # antes de salir de A: con un nombre mal escrito el barrido en B nunca la encuentra
+            nombres = getattr(getattr(s, "galeria", None), "nombres", None) or []
+            hallada = resolver_persona(mp.persona, nombres)
+            if hallada is None:
+                raise SystemExit(f"--persona '{mp.persona}' no esta en la galeria: {', '.join(nombres)}")
+            mp.persona = m.objetivo = hallada
         if not esperar_sensores(s, m):
             raise SystemExit("No llegan /scan y /odom: revisa la conexion (tb4_check.sh).")
         if not reloj_ok(s, m, mp.reloj_max_desfase):
@@ -1476,12 +1611,22 @@ def main():
         if s is not None:
             s.cerrar()
         res = m.resultado()
+        res["fecha"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        res["config"] = config
+        res["args"] = {k: v for k, v in vars(args).items() if isinstance(v, (str, int, float, bool, list, type(None)))}
         res["params"] = dict(nav=asdict(piloto.nav), piloto=asdict(piloto.pp), mision=asdict(mp),
                              directo=asdict(dp))
-        m.evento(f"RESULTADO: {json.dumps({k: v for k, v in res.items() if k != 'params'})}")
-        if args.resultado:
-            with open(args.resultado, "w", encoding="utf-8") as f:
-                json.dump(res, f, indent=2, ensure_ascii=False)
+        m.evento(f"RESULTADO: {json.dumps({k: v for k, v in res.items() if k not in ('params', 'eventos')})}")
+        # siempre queda el JSON del intento (scripts/recopilar_experimentos.py arma la tabla)
+        destino = args.resultado or os.path.join(
+            HERE, "resultados", f"tarea_{args.tarea.lower()}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(destino)), exist_ok=True)
+            with open(destino, "w", encoding="utf-8") as f:
+                json.dump(res, f, indent=2, ensure_ascii=False, default=str)
+            print(f"resultado: {destino}")
+        except OSError as e:
+            print(f"no pude guardar el resultado en {destino}: {e}")
         m.cerrar()
 
 

@@ -82,7 +82,7 @@ def test_calidad_prefiere_el_frame_nitido(rostros):
 
 def test_cache_de_galeria(tmp_path, rostros):
     make_gallery(tmp_path, {"Lena": ["lena.jpg"]}, rostros)
-    assert (tmp_path / ".cache.npz").exists()
+    assert list(tmp_path.glob(".cache_*.npz"))       # una cache por detector (2022mar / 2023mar)
     gal = facial.Galeria(rostros, str(tmp_path))       # segunda carga: desde cache
     assert len(gal.embs) == 2 and gal.nombres == ["Lena"]
 

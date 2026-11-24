@@ -17,7 +17,7 @@ import directo as dr  # noqa: E402
 import test_directo as T  # noqa: E402
 from ver_simulacion import PISTAS  # noqa: E402
 
-RAYOS = 120     # LiDAR reducido a 1 rayo cada 3 grados
+RAYOS = 90      # LiDAR reducido a 1 rayo cada 4 grados (sim.json < 16 MB)
 
 ESCENARIOS = [
     ("zigzag", "Zigzag con flechas", "zigzag", {}),
@@ -36,6 +36,13 @@ ESCENARIOS = [
 
 def grabar(pista, deriva=0.0, retardo=0, extra=None):
     paredes, objetos, t_max = PISTAS[pista]()
+    return grabar_con(paredes, objetos, retardo, deriva, lambda: T.simular_directo(
+        paredes, objetos, t_max=t_max, yaw_drift=deriva, scan_retardo=retardo, dp_extra=extra))
+
+
+def grabar_con(paredes, objetos, retardo, deriva, correr):
+    """Graba la corrida que hace `correr()` (usa test_directo.Sim o bench_directo.Sim)."""
+    import bench_directo as bd
     frames, scans, eventos = [], [], []
     ctx = {"d": None, "fase": "ida", "n_ev": 0, "t": 0.0}
     clase = T.Sim
@@ -78,17 +85,19 @@ def grabar(pista, deriva=0.0, retardo=0, extra=None):
         ctx["d"] = self
         return o_ini(self, *a, **k)
 
-    T.Sim, dr.PilotoDirecto.regreso, dr.PilotoDirecto.iniciar = SimGrabada, regreso, iniciar
+    T.Sim, bd.Sim, dr.PilotoDirecto.regreso, dr.PilotoDirecto.iniciar = SimGrabada, SimGrabada, regreso, iniciar
     try:
-        res = T.simular_directo(paredes, objetos, t_max=t_max, yaw_drift=deriva,
-                                scan_retardo=retardo, dp_extra=extra)
+        res = correr()
     finally:
-        T.Sim, dr.PilotoDirecto.regreso, dr.PilotoDirecto.iniciar = clase, o_reg, o_ini
+        T.Sim, bd.Sim, dr.PilotoDirecto.regreso, dr.PilotoDirecto.iniciar = clase, clase, o_reg, o_ini
+    res.setdefault("collisions", res.get("choques", 0))
+    res.setdefault("min_clear", res.get("holgura", 0.0))
     d = res["d"]
     ok = bool(res["ok"] and T._en_a(res) and res["collisions"] == 0)
     return dict(
         paredes=[[list(p0), list(p1)] for p0, p1 in paredes],
         objetos=[[tipo, list(xy)] for tipo, xy, _ in objetos],
+        qrs=list(getattr(d, "qrs", [])),
         angulos=ctx.get("ang0", []),
         frames=frames, scans=scans, eventos=eventos,
         decisiones=[dict(t=round(x["t"], 1), x=round(x["pose"][0], 2), y=round(x["pose"][1], 2),
@@ -100,10 +109,53 @@ def grabar(pista, deriva=0.0, retardo=0, extra=None):
     )
 
 
+def _perfil(nombre):
+    with open(os.path.join(os.path.dirname(HERE), nombre), encoding="utf-8") as f:
+        return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+
+
+def grabar_bench(paredes, objetos, perfil, deriva=0.03, retardo=3, cam="real"):
+    """Como tests/bench_directo.py: latencia 0.2 s, LiDAR atrasado, ruido y camara del robot."""
+    import bench_directo as bd
+    camara = bd.CAM_REAL if cam == "real" else bd.CAM_IDEAL
+    return grabar_con(paredes, objetos, retardo, deriva, lambda: bd.simular(
+        paredes, objetos, _perfil(perfil), latencia=2, retardo=retardo, ruido=0.01, deriva=deriva,
+        cam=camara))
+
+
+def nuevas():
+    """Corridas del 2026-11-22: circuito del video por perfil y los casos de las fallas arregladas."""
+    import pista_video as pv
+    out = []
+    for ancho, perfil, etiqueta in ((0.75, "config.json", "base"), (0.75, "config_rapido.json", "rápido"),
+                                    (0.75, "config_agresivo.json", "agresivo"),
+                                    (0.90, "config_rapido.json", "rápido"), (0.55, "config_rapido.json", "rápido")):
+        p, o = pv.circuito(ancho)
+        out.append((f"video_{int(ancho * 100)}_{etiqueta}", f"Video {ancho:.2f} m · {etiqueta}",
+                    lambda p=p, o=o, f=perfil: grabar_bench(p, o, f)))
+    final = T._tramo_final(True)
+    out.append(("prohibido_lateral", "Prohibido lateral antes de la bandera",
+                lambda: grabar_bench(final, T.OBJ_FINAL, "config_rapido.json")))
+    caja = T._caja_en_el_fondo(0.35)
+    out.append(("caja_sobresale", "Caja con flecha que sobresale (rescate)",
+                lambda: grabar_bench(caja, [("izq", (2.65, 0.0), T.IZQ_X), ("cara", (2.6, 2.4), (0.0, -1.0))],
+                                     "config_rapido.json")))
+    out.append(("flecha_impresa", "Flecha impresa en caja lateral",
+                lambda: grabar_bench(final, [("izq", (2.0, -0.4), T.IZQ_Y)] + T.OBJ_FINAL,
+                                     "config_rapido.json")))
+    return out
+
+
 def main():
     salida = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "sim_png", "sim.json")
     os.makedirs(os.path.dirname(os.path.abspath(salida)), exist_ok=True)
     out = []
+    for clave, nombre, correr in nuevas():
+        g = correr()
+        g.update(clave=clave, nombre=nombre)
+        out.append(g)
+        r = g["resumen"]
+        print(f"{clave:20s} {'OK' if r['ok'] else 'FALLA'} t={r['t']}s B={r['t_b']}s choques={r['choques']} frames={len(g['frames'])}", flush=True)
     for clave, nombre, pista, kw in ESCENARIOS:
         g = grabar(pista, kw.get("deriva", 0.0), kw.get("retardo", 0), kw.get("extra"))
         g.update(clave=clave, nombre=nombre)
