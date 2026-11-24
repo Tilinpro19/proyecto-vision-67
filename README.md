@@ -6,7 +6,7 @@ Repositorio oficial del proyecto de robótica móvil autónoma y visión computa
 - **Plataforma:** TurtleBot 4 Lite (Base iRobot Create 3 + RPLIDAR A1 + Cámara OAK-D Lite + Raspberry Pi 4 Model B de 4 GB)
 - **Sistema Operativo & Middleware:** Ubuntu 24.04 LTS, ROS 2 Jazzy Jalisco, Fast DDS (perfil unicast/estático)
 - **Fecha de Competencia Final:** 22 de Noviembre de 2026
-- **Resultados de Validación:** 417/417 pruebas automatizadas aprobadas (100% pass) · Validación cinemática, de señales, visión facial y gestos en simulación, y despliegue a bordo (*edge execution*) listo en el robot.
+- **Resultados de Validación:** 448/448 pruebas automatizadas aprobadas (100% pass) · Validación cinemática, de señales, visión facial y gestos en simulación, y despliegue a bordo (*edge execution*) listo en el robot.
 
 ---
 
@@ -83,12 +83,12 @@ Si prefieres no instalar ROS 2 Jazzy ni paquetes en tu sistema, usa el contenedo
 ---
 
 ### Nivel 1: Verificación de Pruebas Automatizadas (Sin Robot)
-Ejecuta la suite completa de 417 pruebas automatizadas:
+Ejecuta la suite completa de 448 pruebas automatizadas:
 ```bash
 cd ~/proyecto-vision-67
 python3 -m pytest 1_competencia/tests -v
 ```
-> **Resultado esperado:** `417 passed`. Valida el modo directo, detección de señales por forma y color, pasillos y decisión, inflado geométrico, VFH-lite, KD-Tree, poda de callejones, reconocimiento facial, gestos y corrección ICP.
+> **Resultado esperado:** `448 passed`. Valida el modo directo, detección de señales por forma y color, pasillos y decisión, inflado geométrico, VFH-lite, KD-Tree, poda de callejones, reconocimiento facial, gestos y corrección ICP.
 
 ---
 
