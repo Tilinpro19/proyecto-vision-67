@@ -25,13 +25,20 @@ try:
     print(f"  [OK]    cv2 {cv2.__version__}, numpy {numpy.__version__}")
 except Exception as e:
     print(f"  [FALLA] cv2/numpy: {e}"); sys.exit(1)
-for m in ("face_detection_yunet_2023mar.onnx", "face_recognition_sface_2021dec.onnx"):
-    p = os.path.join("modelos", m)
-    print(f"  [OK]    {p}" if os.path.isfile(p) else f"  [FALLA] falta {p}")
 try:
     import facial
-    facial.Rostros().calentar()
-    print("  [OK]    facial.Rostros() carga y calienta")
+    print(f"  [OK]    detector {os.path.basename(facial.YUNET)} (OpenCV {cv2.__version__})")
+    r = facial.Rostros()
+    r.calentar()
+    # antes solo se "calentaba" (y se tragaba el error): con OpenCV 4.6 + YuNet 2023mar no detectaba
+    # NINGUNA cara y el chequeo decia OK. Ahora tiene que encontrar una cara real de la galeria.
+    import glob
+    fotos = sorted(glob.glob("galeria/*/*.jpg") + glob.glob("galeria/*/*.png"))
+    if fotos:
+        ok_caras = sum(1 for f in fotos[:5] if len(r.detectar(cv2.imread(f))[1]))
+        if ok_caras == 0:
+            print(f"  [FALLA] el detector no encuentra caras en {fotos[0]} (y otras 4)"); sys.exit(1)
+        print(f"  [OK]    detecta caras: {ok_caras}/{min(5, len(fotos))} fotos de la galeria")
 except BaseException as e:
     print(f"  [FALLA] facial.Rostros(): {e}"); sys.exit(1)
 EOF

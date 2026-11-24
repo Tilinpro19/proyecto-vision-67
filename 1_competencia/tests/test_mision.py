@@ -96,17 +96,21 @@ def test_escaneo_barre_cada_vez_mas_ancho_si_no_ve_nada():
     assert e.paso(20.5, vacio) == (0.0, [])      # al final se rinde sin frames
 
 
+# caja (x, y, w, h, ...) centrada en un cuadro de 8 px: el escaneo para solo con la cara de frente
+CARA_CENTRADA = np.array([[3.0, 3.0, 2.0, 2.0] + [0.0] * 11])
+
+
 def test_escaneo_objetivo_descarta_otra_persona_y_lee_qr_del_objetivo():
     import math
     from types import SimpleNamespace
 
-    mp = ms.MisionParams(escaneo_frames_persona=2, busqueda_angular=0.4, sector_visto_rad=0.6)
+    mp = ms.MisionParams(escaneo_frames_persona=2, escaneo_w=0.4, sector_visto_rad=0.6, escaneo_asentar=0.0)
     galeria = SimpleNamespace(nombres=["Ana", "Mateo"])
 
     class RostrosPorAngulo:
         def detectar(self, img):
             # img es un dict/marcador o array; usamos shape[0] == 8 para indicar cara
-            return img, (np.ones((1, 15)) if img is not None and img.shape[0] == 8 else np.empty((0, 15)))
+            return img, (CARA_CENTRADA if img is not None and img.shape[0] == 8 else np.empty((0, 15)))
 
     def fake_identificar(frames):
         tag = int(frames[0][0, 0, 0])
@@ -151,14 +155,14 @@ def test_escaneo_objetivo_descarta_otra_persona_y_lee_qr_del_objetivo():
 def test_escaneo_objetivo_panea_para_leer_qr_al_costado():
     from types import SimpleNamespace
 
-    mp = ms.MisionParams(escaneo_frames_persona=1, qr_barrido_max=5.0)
+    mp = ms.MisionParams(escaneo_frames_persona=1, qr_barrido_max=5.0, escaneo_asentar=0.0)
     galeria = SimpleNamespace(nombres=["Mateo"])
     cara_sin_qr = np.ones((8, 8, 3), dtype=np.uint8)
     solo_qr = np.ones((4, 4, 3), dtype=np.uint8) * 9
 
     class Rostros:
         def detectar(self, img):
-            return img, (np.ones((1, 15)) if img is not None and img.shape[0] == 8 else np.empty((0, 15)))
+            return img, (CARA_CENTRADA if img is not None and img.shape[0] == 8 else np.empty((0, 15)))
 
     def fake_identificar(frames):
         return SimpleNamespace(nombre="Mateo", score=0.75, seguro=True, n_caras=1, ranking=[("Mateo", 0.75)])
@@ -268,3 +272,119 @@ def test_escaneo_dudoso_espera_todos_los_frames():
     outs = [e.paso(0.1 * k, cara) for k in range(1, mp.escaneo_frames + 1)]
     assert all(o[1] is None for o in outs[:-1]) and len(outs[-1][1]) == mp.escaneo_frames
     assert llamadas == [4, 7, 10]
+
+
+def test_persona_se_normaliza_contra_la_galeria():
+    """La galeria son carpetas 'Thiago_Frias': con 'Thiago Frías' el barrido en B nunca
+    reconocia al objetivo (comparacion exacta) y anunciaba la mejor cara con encontrado=False."""
+    import mision as ms
+    nombres = ["Angel_Mora", "Thiago_Frias"]
+    for escrito in ("Thiago Frías", "thiago_frias", "THIAGO-FRIAS", "  Thiago   Frias "):
+        assert ms.resolver_persona(escrito, nombres) == "Thiago_Frias"
+    assert ms.resolver_persona("Thiago Rojas", nombres) is None
+    assert ms.norm_nombre("Thiago_Frias") == ms.norm_nombre("Thiago Frías")
+
+
+def _cuatro_caras(objetivo, t_max=60.0):
+    """B real: 4 caras juntas (~17 grados entre si a ~1 m), preview 250 px / 37 grados. Cada cara
+    se pinta como columnas con su numero; el detector falso las lee de la imagen (vale tambien
+    para los recortes) e identificar() devuelve la cara que domina el recorte."""
+    import math
+    from types import SimpleNamespace
+    nombres = ["Ana", "Beto", "Caro", "Dani"]
+    yaws = [0.45, 0.15, -0.15, -0.45]
+    W, fov = 250, math.radians(37.0)
+    f = (W / 2.0) / math.tan(fov / 2.0)
+
+    def render(yaw):
+        img = np.zeros((W, W, 3), np.uint8)
+        for i, y in enumerate(yaws):
+            b = math.atan2(math.sin(y - yaw), math.cos(y - yaw))
+            if abs(b) < fov / 2.0:
+                cx = W / 2.0 - f * math.tan(b)
+                img[100:140, max(0, int(cx - 15)):min(W, int(cx + 15)), :] = i + 1
+        return img
+
+    class Detector:
+        def detectar(self, img):
+            col = img[:, :, 0].max(axis=0)
+            cajas, x = [], 0
+            while x < len(col):
+                if col[x]:
+                    x0 = x
+                    while x < len(col) and col[x]:
+                        x += 1
+                    cajas.append([x0, 100, x - x0, 40] + [0.0] * 11)
+                x += 1
+            return img, (np.array(cajas, float) if cajas else np.empty((0, 15)))
+
+    def identificar(frames):
+        v = np.concatenate([fr[:, :, 0].ravel() for fr in frames])
+        v = v[v > 0]
+        n = nombres[int(np.bincount(v).argmax()) - 1]
+        return SimpleNamespace(nombre=n, score=0.8, seguro=True, n_caras=len(frames), ranking=[(n, 0.8)])
+
+    mp = ms.MisionParams(escaneo_frames_persona=3, qr_barrido_max=1.0)
+    esc = ms.EscaneoObjetivo(objetivo, Detector(), SimpleNamespace(nombres=nombres), mp, t0=0.0, yaw0=0.0,
+                             qr_fn=lambda img: [], identificar_fn=identificar)
+    t, yaw, res = 0.0, 0.0, None
+    while res is None and t < t_max:
+        t += 0.1
+        ang, res = esc.paso(t, yaw, render(yaw))
+        yaw = math.atan2(math.sin(yaw + ang * 0.1), math.cos(yaw + ang * 0.1))
+    return res, [v[1].nombre for v in esc.vistos]
+
+
+def test_escaneo_objetivo_para_frente_a_cada_una_de_4_caras_juntas():
+    """Antes: paraba con la cara en cualquier lado del cuadro, identificaba la MAS GRANDE (podia
+    ser la vecina) y marcaba +-37 grados como vistos: con 4 caras a ~17 grados se saltaba vecinas."""
+    res, vistos = _cuatro_caras("Zoe")                 # no esta: tiene que revisar las 4
+    assert sorted(vistos) == ["Ana", "Beto", "Caro", "Dani"]
+    assert res["encontrado"] is False
+    res, vistos = _cuatro_caras("Caro")
+    assert res["encontrado"] is True and res["nombre"] == "Caro"
+    assert len(vistos) == len(set(vistos))             # ninguna cara escaneada dos veces
+
+
+def test_reconocimiento_guarda_foto_de_la_cara_elegida(tmp_path):
+    """Al reconocer a la persona queda un JPG en logs/ con la cara marcada, el nombre y el score
+    (y la ruta en el resultado JSON) para revisar el resultado despues del intento."""
+    import cv2
+    res, _ = _cuatro_caras("Caro")
+    img, caja = res["foto"]
+    assert int(np.bincount(img[100:140, int(caja[0]):int(caja[0] + caja[2]), 0].ravel()).argmax()) == 3  # Caro
+    m = ms.Mision("A", str(tmp_path), quiet=True)
+    ruta = m.guardar_foto(img, res["nombre"], res["score"], res["seguro"], caja=caja)
+    assert ruta and os.path.isfile(ruta) and "reconocido_Caro" in ruta
+    assert cv2.imread(ruta).shape == img.shape
+    assert m.resultado()["foto"] == ruta
+    m.cerrar()
+
+
+def test_objetivo_dudoso_junta_mas_cuadros_y_espera_a_que_frene():
+    """Pista 23-nov: recolectaba apenas frenaba (cuadros movidos) y con 3 cuadros Angel salio
+    dudoso (0.33). Ahora espera escaneo_asentar quieto y, si el objetivo sale dudoso, junta otros
+    3 cuadros antes de seguir."""
+    from types import SimpleNamespace
+    mp = ms.MisionParams(escaneo_frames_persona=3, qr_barrido_max=0.5)
+    llamadas = []
+
+    def identificar(frames):
+        llamadas.append(len(frames))
+        seguro = len(frames) >= 6
+        return SimpleNamespace(nombre="Mateo", score=0.6 if seguro else 0.33, seguro=seguro,
+                               n_caras=len(frames), ranking=[("Mateo", 0.6)])
+
+    class Rostros:
+        def detectar(self, img):
+            return img, CARA_CENTRADA
+
+    esc = ms.EscaneoObjetivo("Mateo", Rostros(), SimpleNamespace(nombres=["Mateo"]), mp, t0=0.0, yaw0=0.0,
+                             qr_fn=lambda im: [], identificar_fn=identificar)
+    cara = np.ones((8, 8, 3), dtype=np.uint8)
+    t, res = 0.0, None
+    while res is None and t < 10.0:
+        t = round(t + 0.1, 1)
+        _, res = esc.paso(t, 0.0, cara)
+    assert llamadas == [3, 6]                 # dudoso con 3 -> junta 3 mas -> seguro con 6
+    assert res["nombre"] == "Mateo" and res["seguro"] and res["encontrado"]

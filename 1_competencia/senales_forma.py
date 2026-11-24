@@ -75,11 +75,16 @@ _Q2_MASK = (_R <= 0.62) & (_NX < -0.10) & (_NY < -0.10)
 _Q3_MASK = (_R <= 0.62) & (_NX < -0.10) & (_NY > 0.10)
 _Q4_MASK = (_R <= 0.62) & (_NX > 0.10) & (_NY > 0.10)
 
+# Dos formas de cada flecha: la del docx sube y dobla ARRIBA ("↱" der / "↰" izq) y la impresa en la
+# pista real (23-nov) baja y dobla ABAJO ("↳" der / "↲" izq): espejo vertical, mismo sentido.
 _CIRCLE_TEMPLATES = {
     "izq": _TMPL_IZQ[_INNER_MASK],
     "der": _TMPL_DER[_INNER_MASK],
+    "izq_b": np.flipud(_TMPL_IZQ)[_INNER_MASK],
+    "der_b": np.flipud(_TMPL_DER)[_INNER_MASK],
     "prohibido": _TMPL_PROH[_INNER_MASK],
 }
+_TIPO_PLANTILLA = {"izq": "izq", "der": "der", "izq_b": "izq", "der_b": "der", "prohibido": "prohibido"}
 _BAND_BASE = [
     _TMPL_BAND,
     np.rot90(_TMPL_BAND, 1),
@@ -163,24 +168,32 @@ def _clasificar_bw(bw):
     ring_dark = float(bw[_RING_MASK].mean())
     inner_dark = float(bw[_INNER_MASK].mean())
     corner_dark = float(bw[_OUTER_CORNER_MASK].mean())
-    if ring_dark < 0.45 or corner_dark > 0.35:
+    # 0.38: el anillo de la hoja real es mas fino que el del docx (0.44 en el preview de 250 px);
+    # igual tiene que rodear los 4 cuadrantes (abajo)
+    if ring_dark < 0.38 or corner_dark > 0.35:
         return None, 0.0
     if not (0.12 <= inner_dark <= 0.52):
         return None, 0.0
 
-    # El anillo exterior debe rodear los 4 cuadrantes (evita marcos parciales o letras)
-    for qmask in (_RING_MASK & (_NX >= 0) & (_NY >= 0),
-                  _RING_MASK & (_NX < 0) & (_NY >= 0),
-                  _RING_MASK & (_NX >= 0) & (_NY < 0),
-                  _RING_MASK & (_NX < 0) & (_NY < 0)):
-        if float(bw[qmask].mean()) < 0.30:
-            return None, 0.0
+    # El anillo exterior debe rodear los 4 cuadrantes (evita marcos parciales o letras). Se tolera
+    # UN cuadrante debil (>= 0.08): la hoja real tiene el anillo cortado (papel roto) o pegado al borde.
+    quads = [float(bw[q].mean()) for q in (_RING_MASK & (_NX >= 0) & (_NY >= 0),
+                                            _RING_MASK & (_NX < 0) & (_NY >= 0),
+                                            _RING_MASK & (_NX >= 0) & (_NY < 0),
+                                            _RING_MASK & (_NX < 0) & (_NY < 0))]
+    if min(quads) < 0.08 or sum(q >= 0.30 for q in quads) < 3:
+        return None, 0.0
 
     inner_vec = bw[_INNER_MASK]
     scores = {k: _corr(inner_vec, tmpl) for k, tmpl in _CIRCLE_TEMPLATES.items()}
     orden = sorted(scores.items(), key=lambda kv: -kv[1])
-    mejor_tipo, mejor_score = orden[0]
-    segundo_score = orden[1][1]
+    mejor_forma, mejor_score = orden[0]
+    mejor_tipo = _TIPO_PLANTILLA[mejor_forma]
+    # la ventaja se mide dentro de la FAMILIA de la forma (docx: izq/der/prohibido; pista: izq_b/der_b/
+    # prohibido): "↲" es "↱" girada 180 grados y se le parece, pero nunca se mezclan formas de una y otra.
+    # El sentido lo garantiza igual la verificacion geometrica de abajo.
+    familia = {"izq_b", "der_b", "prohibido"} if mejor_forma.endswith("_b") else {"izq", "der", "prohibido"}
+    segundo_score = max(v for k, v in orden if k in familia and _TIPO_PLANTILLA[k] != mejor_tipo)
 
     if mejor_score < 0.42 or (mejor_score - segundo_score) < 0.14:
         return None, 0.0
@@ -197,7 +210,15 @@ def _clasificar_bw(bw):
     q3_dark = float(bw[_Q3_MASK].mean())
     q4_dark = float(bw[_Q4_MASK].mean())
 
-    if mejor_tipo == "izq":
+    if mejor_forma == "izq_b":
+        # "↲": tallo vertical ARRIBA a la derecha (top_x > 0), codo abajo (Q4) y Q2 (arriba-izq) vacio
+        if top_x < 0.10 or q4_dark < 0.10 or q2_dark > 0.20:
+            return None, 0.0
+    elif mejor_forma == "der_b":
+        # "↳": tallo vertical ARRIBA a la izquierda (top_x < 0), codo abajo (Q3) y Q1 (arriba-der) vacio
+        if top_x > -0.10 or q3_dark < 0.10 or q1_dark > 0.20:
+            return None, 0.0
+    elif mejor_tipo == "izq":
         # Tallo vertical abajo a la derecha (bot_x > 0), codo en Q1 y cuadrante Q3 (abajo-izq) vacio
         if bot_x < 0.10 or q1_dark < 0.10 or q3_dark > 0.20:
             return None, 0.0
@@ -255,6 +276,78 @@ def _eval_bw_bandera(bw):
 
     conf = float(np.clip(0.65 * best_corr + 0.35 * min(min(trans_h, trans_v) / 6.0, 1.0), 0.0, 1.0))
     return True, conf
+
+
+def _cuadros_anidados(gray):
+    """Cuantos cuadrados con hijo y nieto (negro-blanco-negro) hay: los 3 de posicionamiento de un QR.
+    Una bandera de cuadros no tiene ninguno (medido: 6/6 QR -> 3, 4/4 banderas -> 0)."""
+    blur = cv2.GaussianBlur(gray, (3, 3), 0.8)
+    _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    cs, jer = cv2.findContours(bw, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    if jer is None:
+        return 0
+    jer, n = jer[0], 0
+    for i, c in enumerate(cs):
+        hijo = jer[i][2]
+        if hijo < 0 or jer[hijo][2] < 0:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        if w >= 6 and h >= 6 and 0.6 < w / h < 1.6 and cv2.contourArea(c) > 0.5 * w * h:
+            n += 1
+    return n
+
+
+def _bandera_por_manchas(gray, ocupados=()):
+    """Respaldo para la bandera REAL de la pista (23-nov): dibujada ondeando, los cuadros salen
+    deformados y la plantilla de damero regular no correlaciona. Se buscan >= 8 manchas oscuras
+    solidas de tamano parecido con vecinas a distancia del orden de su lado (damero).
+    Devuelve (bbox, confianza) o None. Las zonas ya ocupadas (QR, flechas) no cuentan."""
+    H, W = gray.shape[:2]
+    blur = cv2.GaussianBlur(gray, (3, 3), 0.8)
+    _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    for x, y, w, h in ocupados:
+        bw[max(0, y - 4):y + h + 4, max(0, x - 4):x + w + 4] = 0
+    bw = cv2.erode(bw, np.ones((3, 3), np.uint8))     # separa los cuadros que se tocan en las esquinas
+    n, lab, st, cen = cv2.connectedComponentsWithStats(bw)
+    manchas = []
+    for i in range(1, n):
+        x, y, w, h, a = st[i]
+        if not (0.0015 * H * W <= a <= 0.06 * H * W) or max(w, h) > 4 * min(w, h):
+            continue
+        cs, _ = cv2.findContours((lab[y:y + h, x:x + w] == i).astype(np.uint8), cv2.RETR_EXTERNAL,
+                                 cv2.CHAIN_APPROX_SIMPLE)
+        c = max(cs, key=cv2.contourArea)
+        hull = cv2.contourArea(cv2.convexHull(c))
+        if hull > 0 and cv2.contourArea(c) / hull >= 0.80:
+            manchas.append((float(a), float(cen[i][0]), float(cen[i][1]), (x, y, w, h)))
+    if len(manchas) < 8:
+        return None
+    areas = np.array([m[0] for m in manchas])
+    med = float(np.median(areas))
+    manchas = [m for m in manchas if 0.4 * med <= m[0] <= 2.5 * med]      # descarta letras/bordes sueltos
+    if len(manchas) < 8:
+        return None
+    areas = np.array([m[0] for m in manchas])
+    if areas.std() / areas.mean() > 0.5:
+        return None
+    pts = np.array([(m[1], m[2]) for m in manchas])
+    d = np.hypot(pts[:, None, 0] - pts[None, :, 0], pts[:, None, 1] - pts[None, :, 1])
+    np.fill_diagonal(d, np.inf)
+    nn = d.min(axis=1) / math.sqrt(float(np.median(areas)))
+    if not (0.9 <= float(np.median(nn)) <= 2.6) or float(np.mean((nn > 0.6) & (nn < 3.2))) < 0.75:
+        return None
+    x0 = min(m[3][0] for m in manchas)
+    y0 = min(m[3][1] for m in manchas)
+    x1 = max(m[3][0] + m[3][2] for m in manchas)
+    y1 = max(m[3][1] + m[3][3] for m in manchas)
+    # un QR (sus modulos son manchas iguales en rejilla) NO es la bandera: en la Pi el QR se lee 1 de
+    # cada 3 cuadros y en los otros no queda "ocupado" -> llegaba a "B" en A con un QR a la vista
+    # los 3 cuadros de posicionamiento estan en las ESQUINAS del QR: fuera de las manchas elegidas
+    pad = int(max(6, 0.35 * max(x1 - x0, y1 - y0)))
+    if _cuadros_anidados(gray[max(0, y0 - pad):y1 + pad, max(0, x0 - pad):x1 + pad]) >= 2:
+        return None
+    conf = float(np.clip(0.45 + 0.02 * len(manchas) - 0.3 * areas.std() / areas.mean(), 0.0, 0.9))
+    return (int(x0), int(y0), int(x1 - x0), int(y1 - y0)), conf
 
 
 def _es_bandera(gray_crop):
@@ -352,7 +445,8 @@ def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
     ocupados = []
 
     # 1. Codigos QR (reutiliza senales.decodificar_qr que agrega borde blanco y reescala)
-    for texto, quad in decodificar_qr(img, esfuerzo=esfuerzo_qr):
+    # esfuerzo_qr=0: sin QR (en la Pi es ~50 de los ~140 ms del cuadro; en la ida se lee 1 de cada 3)
+    for texto, quad in (decodificar_qr(img, esfuerzo=esfuerzo_qr) if esfuerzo_qr > 0 else ()):
         xs, ys = quad[:, 0], quad[:, 1]
         x0, y0 = max(int(np.floor(xs.min())), 0), max(int(np.floor(ys.min())), 0)
         x1, y1 = min(int(np.ceil(xs.max())), W), min(int(np.ceil(ys.max())), H)
@@ -395,8 +489,25 @@ def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
                 continue
             candidatos_circ.append((x, y, w, h))
 
+    # Respaldo: circulos de Hough. El anillo real puede tener un corte (papel roto) o tocar el borde
+    # de la imagen: el contorno ya no es circular y no llegaba al clasificador (pista 23-nov, 2a esquina).
+    cand_hough = []
+    hough = cv2.HoughCircles(blur, cv2.HOUGH_GRADIENT, dp=1.2, minDist=16, param1=120, param2=26,
+                             minRadius=10, maxRadius=int(0.48 * min(H, W)))
+    if hough is not None:
+        for cx, cy, r0 in hough[0][:12]:
+            # Hough suele quedarse con el borde INTERIOR del anillo: dos escalas
+            for r in (r0 * 1.04, r0 * 1.16):
+                x0, y0 = int(max(0, round(cx - r))), int(max(0, round(cy - r)))
+                x1, y1 = int(min(W, round(cx + r))), int(min(H, round(cy + r)))
+                if x1 - x0 >= 18 and y1 - y0 >= 18 and 0.55 <= (x1 - x0) / float(y1 - y0) <= 1.45:
+                    cand_hough.append((x0, y0, x1 - x0, y1 - y0))
+
     # Evaluar candidatos circulares de mayor a menor y descartar solapados solo contra aceptados
     candidatos_circ.sort(key=lambda b: -(b[2] * b[3]))
+    # Hough DESPUES de los contornos: un circulo de Hough fallido no debe tapar (iou > 0.85) al
+    # recuadro bueno del contorno
+    candidatos_circ += sorted(cand_hough, key=lambda b: -(b[2] * b[3]))
     vistos_circ = []
     for box in candidatos_circ:
         if any(_iou(box, b) > 0.85 for b in vistos_circ):
@@ -456,6 +567,15 @@ def detectar(img, lado_m=0.10, fov_deg=69.0, esfuerzo_qr=2):
             ocupados.append(box)
             out.append(Senal("bandera", conf_b, box, texto=None,
                              distancia_m=_estimar_dist(w, h, W, lado_m, fov_deg)))
+
+    if not any(s.tipo == "bandera" for s in out):
+        hallada = _bandera_por_manchas(gray, ocupados)
+        if hallada is not None:
+            box, conf_b = hallada
+            # un cuadro deformado de la bandera puede pasar por flecha: dentro de la bandera no hay flechas
+            out = [s for s in out if s.tipo == "qr" or not _contiene(box, s.bbox, tol=6)]
+            out.append(Senal("bandera", conf_b, box, texto=None,
+                             distancia_m=_estimar_dist(box[2], box[3], W, lado_m, fov_deg)))
 
     out.sort(key=lambda s: -(s.bbox[2] * s.bbox[3]))
     return out

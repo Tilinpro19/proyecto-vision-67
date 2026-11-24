@@ -257,3 +257,32 @@ def test_flecha_impresa_en_escala_de_grises_tambien_se_detecta():
         img = rs.degradar(rs.proyectar(gris, gris.shape[1], 0.107 * gris.shape[1] / im.shape[1], d, 640), rng=rng)
         vistas.append([x.tipo for x in sf.detectar(img)])
     assert all("der" in v for v in vistas), vistas
+
+
+# --- cuadros REALES de la pista (preview 250 px de la OAK-D, 23-nov) ------------------------
+PISTA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "senales_pista")
+
+
+@pytest.mark.parametrize("archivo", sorted(os.listdir(PISTA_DIR)) if os.path.isdir(PISTA_DIR) else [])
+def test_cuadros_reales_de_la_pista(archivo):
+    """La hoja real trae la flecha "↳"/"↲" (el docx "↱"/"↰"), anillos rotos o pegados al borde y la
+    bandera dibujada ondeando: antes 0 flechas y 0 banderas detectadas en la pista."""
+    img = cv2.imread(os.path.join(PISTA_DIR, archivo))
+    tipos = [s.tipo for s in sf.detectar(img, esfuerzo_qr=1, fov_deg=37.0)]
+    esperado = archivo.split("_")[0]
+    if esperado == "nada":
+        assert tipos == [], tipos
+    else:
+        assert tipos == [esperado], tipos        # exactamente esa senal (sin flechas falsas en la bandera)
+
+
+@pytest.mark.parametrize("esfuerzo_qr", [0, 1])
+@pytest.mark.parametrize("nombre", ["alfa", "beta", "gamma", "omega", "phi", "rho"])
+def test_un_qr_nunca_es_bandera(nombre, esfuerzo_qr):
+    """23-nov: el respaldo de bandera (manchas) tomaba los QR gamma/omega como bandera y, como en la
+    ida el QR se lee 1 de cada 3 cuadros, el robot "llegaba a B" en A y no avanzaba."""
+    img = cv2.imread(os.path.join(REF_DIR, f"qr_milestone_{nombre}.png"))
+    for escala in (1.0, 0.5, 0.25):
+        im = cv2.resize(img, None, fx=escala, fy=escala, interpolation=cv2.INTER_AREA)
+        tipos = [s.tipo for s in sf.detectar(im, esfuerzo_qr=esfuerzo_qr, fov_deg=37.0)]
+        assert "bandera" not in tipos, (escala, tipos)

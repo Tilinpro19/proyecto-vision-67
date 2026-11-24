@@ -25,7 +25,21 @@ import cv2
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-YUNET = os.path.join(HERE, "modelos", "face_detection_yunet_2023mar.onnx")
+YUNET_2023 = os.path.join(HERE, "modelos", "face_detection_yunet_2023mar.onnx")
+# OpenCV < 4.8 (la Pi: 4.6.0 de apt) no corre YuNet 2023mar: TODA deteccion falla con
+# "Layer with requested id=-1 not found". Para 4.6 existe la version 2022mar (opencv_zoo, commit
+# c97242c). El sistema de la Pi no se toca (sin internet ni pip, y su cv2 lo usa ROS).
+YUNET_2022 = os.path.join(HERE, "modelos", "face_detection_yunet_2022mar.onnx")
+
+
+def _cv_version():
+    try:
+        return tuple(int(x) for x in cv2.__version__.split(".")[:2])
+    except ValueError:
+        return (0, 0)
+
+
+YUNET = YUNET_2022 if _cv_version() < (4, 8) and os.path.isfile(YUNET_2022) else YUNET_2023
 SFACE = os.path.join(HERE, "modelos", "face_recognition_sface_2021dec.onnx")
 GALERIA = os.path.join(HERE, "galeria")
 IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp")
@@ -50,6 +64,9 @@ class Rostros:
     """YuNet + SFace. detectar(img) -> (img_usada, caras Nx15 de mayor a menor area)."""
 
     def __init__(self, score_min=SCORE_MIN):
+        if _cv_version() < (4, 8) and YUNET != YUNET_2022:
+            raise SystemExit(f"OpenCV {cv2.__version__} no corre YuNet 2023mar: falta {YUNET_2022} "
+                             "(opencv_zoo, commit c97242c).")
         for m in (YUNET, SFACE):
             if not os.path.isfile(m):
                 raise SystemExit(f"Falta el modelo {m} (opencv_zoo, ver README).")
@@ -59,10 +76,9 @@ class Rostros:
     def calentar(self, ancho=640, alto=480):
         """Una deteccion en vacio: la primera inferencia de OpenCV DNN es mucho mas lenta y,
         si cae en B, retrasa el escaneo. Mejor pagarla en A, antes de salir."""
-        try:
-            self.detectar(np.zeros((alto, ancho, 3), np.uint8))
-        except Exception:
-            pass
+        # sin try/except: si el detector no corre (modelo incompatible con este OpenCV) hay que
+        # saberlo en A, no descubrir en B que no reconoce a nadie
+        self.detectar(np.zeros((alto, ancho, 3), np.uint8))
 
     def detectar(self, img):
         h, w = img.shape[:2]
@@ -70,8 +86,12 @@ class Rostros:
             k = MIN_SIDE / max(h, w)
             img = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_CUBIC)
         h, w = img.shape[:2]
-        self.det.setInputSize((w, h))
-        _, faces = self.det.detect(img)
+        # OpenCV 4.6 (Raspberry Pi): YuNet FPN falla si w o h no son multiplos de 32 (p. ej. 600x800)
+        ph, pw = (-h) % 32, (-w) % 32
+        det_img = (cv2.copyMakeBorder(img, 0, ph, 0, pw, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+                   if (ph or pw) else img)
+        self.det.setInputSize((w + pw, h + ph))
+        _, faces = self.det.detect(det_img)
         if faces is None:
             return img, np.empty((0, 15), np.float32)
         return img, faces[np.argsort(-faces[:, 2] * faces[:, 3])]
@@ -101,7 +121,9 @@ class Galeria:
         self.cargar()
 
     def cargar(self):
-        cache_path = os.path.join(self.carpeta, ".cache.npz")
+        # una cache por detector: los recortes (y los embeddings) de YuNet 2022mar y 2023mar difieren
+        modelo = os.path.splitext(os.path.basename(YUNET))[0].replace("face_detection_", "")
+        cache_path = os.path.join(self.carpeta, f".cache_{modelo}.npz")
         cache = {}
         if os.path.isfile(cache_path):
             z = np.load(cache_path, allow_pickle=False)

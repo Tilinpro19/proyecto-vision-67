@@ -1,5 +1,5 @@
 {
-  "_nota": "Intento 2 (rapido). config.json + perfil 'rapido B' de tests/bench_directo.py: 0 choques, holgura >= 23 cm, 7/7 decisiones y fin a < 0.35 m de A en el circuito del video (0.55-0.90 m) y en el pasillo real de 0.56 m, con latencia 0.2 s, LiDAR atrasado 0.3 s, ruido, deriva y camara realista (preview 250 px, 37 grados, 30 % de cuadros perdidos). SIMULADO.",
+  "_nota": "Intento 2 (rapido). config.json + perfil 'rapido B' de tests/bench_directo.py: 0 choques, holgura >= 23 cm, 7/7 decisiones y fin a < 0.35 m de A en el circuito del video (0.55-0.90 m) y en el pasillo real de 0.56 m, con latencia 0.2 s, LiDAR atrasado 0.3 s, ruido, deriva y camara realista (preview 250 px, 37 grados, 30 % de cuadros perdidos). SIMULADO. + GIRO FLUIDO arco_radio=0.25 (2026-11-23): 0 choques, holgura >= 22.7 cm, 159 s a 0.75 m (antes 170) y 130 s a 0.90 m (antes 148).",
   "safety_margin": 0.12,
   "max_linear": 0.22,
   "max_angular": 1.2,
@@ -29,5 +29,6 @@
   "fov_deg": 69.0,
   "v_estrecho": 0.24,
   "v_cerca": 0.16,
-  "w_giro": 1.8
+  "w_giro": 1.8,
+  "arco_radio": 0.25
 }

@@ -1,5 +1,5 @@
 {
-  "_nota": "Intento 3 (solo si el intento 2 salio limpio). Perfil 'rapido D' de tests/bench_directo.py: ~8 % menos tiempo que el rapido, 0 choques simulados, pero puede terminar a 0.35-0.41 m del punto de salida (dentro de a_suficiente=0.40). SIMULADO.",
+  "_nota": "Intento 3 (solo si el intento 2 salio limpio). Perfil 'rapido D' de tests/bench_directo.py: ~8 % menos tiempo que el rapido, 0 choques simulados, pero puede terminar a 0.35-0.41 m del punto de salida (dentro de a_suficiente=0.40). SIMULADO. + GIRO FLUIDO arco_radio=0.25 (2026-11-23): ahora cumple los 4 criterios en todos los casos (antes fallaba por terminar a 0.38-0.41 m de A): 146 s a 0.75 m, 126 s a 0.90 m, 0 choques.",
   "safety_margin": 0.12,
   "max_linear": 0.22,
   "max_angular": 1.2,
@@ -31,5 +31,6 @@
   "v_cerca": 0.18,
   "w_giro": 1.9,
   "k_giro": 2.6,
-  "d_lento": 0.8
+  "d_lento": 0.8,
+  "arco_radio": 0.25
 }

@@ -1,0 +1,14 @@
+{
+  "fecha_pi": "1795482138",
+  "uptime": "up 2 hours, 30 minutes",
+  "carga": "1.36 1.00 0.83",
+  "temp_c": "55",
+  "disco": "27%",
+  "bringup": "active",
+  "topicos": "27",
+  "bateria": "73 %",
+  "en_dock": "True",
+  "scan_activo": "0",
+  "fecha_pc": "2026-11-23 20:02:54",
+  "desfase_reloj_s": -2.4
+}
