@@ -6,7 +6,7 @@ Repositorio oficial del proyecto de robótica móvil autónoma y visión computa
 - **Plataforma:** TurtleBot 4 Lite (Base iRobot Create 3 + RPLIDAR A1 + Cámara OAK-D Lite + Raspberry Pi 4 Model B de 4 GB)
 - **Sistema Operativo & Middleware:** Ubuntu 24.04 LTS, ROS 2 Jazzy Jalisco, Fast DDS (perfil unicast/estático)
 - **Fecha de Competencia Final:** 22 de Noviembre de 2026
-- **Resultados de Validación:** 336/336 pruebas automatizadas aprobadas (100% pass) · Validación cinemática, de señales, visión facial y gestos en simulación, y despliegue a bordo (*edge execution*) listo en el robot.
+- **Resultados de Validación:** 417/417 pruebas automatizadas aprobadas (100% pass) · Validación cinemática, de señales, visión facial y gestos en simulación, y despliegue a bordo (*edge execution*) listo en el robot.
 
 ---
 
@@ -25,7 +25,7 @@ Repositorio oficial del proyecto de robótica móvil autónoma y visión computa
 | **Pasillo y decisión (`pasillo.py`, `decision.py`, `explorar.py`)** | Clasifica la topología local (pasillo, L, T, cruz, callejón) y decide señal > LiDAR > exploración. | `tests/test_pasillo.py`, `tests/test_decision.py` |
 | **Evasión reactiva (`nav_core.py`, `navegacion.py`, `profundidad.py`)** | VFH-lite, `SpatialKDTree2D`, `BreadcrumbGraph` con poda de callejones, retorno con ICP 2D y guardián de profundidad OAK-D bajo demanda. | `tests/test_nav_core.py` y `2_laboratorio/robot_simulado.py` |
 | **Reconocimiento facial (`facial.py`)** | YuNet + SFace (ONNX offline), filtro de nitidez y anuncio por voz y en `/nombre_reconocido`. | `python3 facial.py --probar` |
-| **Tarea B por gestos (`gestos_teleop.py`, `mano_teleop.py`)** | MediaPipe HandLandmarker, armado/parado por gestos sin teclado y guardián LiDAR. | `tests/test_gestos.py`, `./tarea_b.sh` |
+| **Tarea B por gestos (`gestos_teleop.py`, `mano_teleop.py`)** | MediaPipe HandLandmarker, armado/parado por gestos sin teclado, modo `--gestos-mejorados` (confirmación por tiempo, `like` robusto y `--v-rostro`) y guardián LiDAR. | `tests/test_gestos*.py`, `./tarea_b.sh` |
 | **Reloj Create 3 ↔ Pi** | Corrige el desfase sin internet vía `POST /api/restart-ntpd` y servicio persistente. | `scripts/chequeo_reloj_tb4.py` |
 | **Despliegue a bordo** | `desplegar_en_robot.sh` sincroniza el código a la Pi; los lanzadores `*_onboard.sh` no dependen del Wi-Fi. | `make deploy IP=<ip>` |
 | **Docker** | ROS 2 Jazzy + OpenCV + MediaPipe en [`tb4_docker/`](tb4_docker/), sin instalar ROS 2 en la PC. | `make docker-run` |
@@ -83,12 +83,12 @@ Si prefieres no instalar ROS 2 Jazzy ni paquetes en tu sistema, usa el contenedo
 ---
 
 ### Nivel 1: Verificación de Pruebas Automatizadas (Sin Robot)
-Ejecuta la suite completa de 336 pruebas automatizadas:
+Ejecuta la suite completa de 417 pruebas automatizadas:
 ```bash
 cd ~/proyecto-vision-67
 python3 -m pytest 1_competencia/tests -v
 ```
-> **Resultado esperado:** `336 passed`. Valida el modo directo, detección de señales por forma y color, pasillos y decisión, inflado geométrico, VFH-lite, KD-Tree, poda de callejones, reconocimiento facial, gestos y corrección ICP.
+> **Resultado esperado:** `417 passed`. Valida el modo directo, detección de señales por forma y color, pasillos y decisión, inflado geométrico, VFH-lite, KD-Tree, poda de callejones, reconocimiento facial, gestos y corrección ICP.
 
 ---
 
@@ -332,6 +332,7 @@ proyecto-vision-67/
 │   ├── profundidad.py           # Guardián de profundidad OAK-D bajo demanda
 │   ├── facial.py                # Reconocimiento facial (YuNet + SFace) y anuncio por voz
 │   ├── gestos_teleop.py · mano_teleop.py        # Tarea B: teleoperación por gestos (MediaPipe)
+│   ├── accion_rostro.py · banco_gestos.py · evaluar_gestos.py · grabar_gestos.py  # Evaluación y mejoras de gestos
 │   ├── probar_*_teleop.py · reconocer_robot.py  # Pruebas manuales de visión con el robot
 │   ├── tarea_a.sh · tarea_b.sh · competencia.sh # Lanzadores desde la laptop
 │   ├── *_onboard.sh             # Lanzadores a bordo de la Pi

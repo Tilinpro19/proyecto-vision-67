@@ -193,13 +193,22 @@ def test_opcion_apagada_por_defecto():
     assert not hasattr(g, "copia_limpia")  # atributo solo existe tras __init__ (False)
 
 
-def test_gestos_no_copia_el_frame_si_no_se_pide():
+def test_gestos_no_copia_el_frame_si_no_se_pide(monkeypatch):
     class Cap:
         def read(self):
             return True, NEGRO.copy()
 
         def release(self):
             pass
+
+    class DummyDetector:
+        def find(self, img, ts_ms=None):
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(gt, "DetectorMano", DummyDetector)
     g = gt.Gestos(0, cap=Cap(), reloj_t=True)
     try:
         g.leer(0.0)
