@@ -1,32 +1,12 @@
-# Índice de Entregables Oficiales · Proyecto Final
+# Entregables · Proyecto Final
 
-En este directorio se compilan los reportes técnicos, especificaciones y documentos formales del proyecto de robótica y visión computacional con el TurtleBot 4.
+Documentos formales del proyecto de robótica y visión computacional con el TurtleBot 4 Lite.
 
----
+| Documento | Qué contiene |
+|---|---|
+| [Informe final técnico](informe_final.md) | Todos los subsistemas (señales, pasillo, decisión, navegación, gestos, facial), verificación automatizada y tabla de ensayos en pista. |
+| [Informe técnico en LaTeX](informe_tecnico/informe.pdf) ([fuente](informe_tecnico/informe.tex)) | Versión formal con figuras generadas por [`generar_figuras.py`](informe_tecnico/generar_figuras.py). |
+| [Presentación final](presentacion_final.html) | Diapositivas HTML (navegables con `←`/`→`, imprimibles a PDF) para la sustentación. |
+| [Arquitectura de navegación vs. Nav2/SLAM](informe_arquitectura_navegacion.md) | Comparativa de CPU, RAM y latencia; por qué se eligió navegación reactiva en la Raspberry Pi 4. |
 
-## 📑 Documentos Disponibles
-
-### 1. [Informe Técnico: Arquitectura de Navegación Reactiva vs. Nav2/SLAM](informe_arquitectura_navegacion.md)
-- **Tipo:** Informe Técnico de Arquitectura y Rendimiento.
-- **Fecha:** 03/11/2026.
-- **Contenido:**
-  - Comparativa integral de rendimiento computacional (CPU, RAM, latencia DDS).
-  - Justificación de por qué la arquitectura reactiva (VFH-lite + migas + ICP 2D) es superior a Nav2/MPPI para circuitos ciegos en la Raspberry Pi 4.
-  - Análisis de ventajas, desventajas y casos de uso en competencia.
-  - Implementación de estructuras de datos optimizadas (`SpatialKDTree2D`, `BreadcrumbGraph`).
-  - Guía de despliegue a bordo (*Edge Execution*) con 0 ms de latencia.
-
-### 2. [Informe de Estado y Madurez al 70%](informe_estado_proyecto_70.md)
-- **Tipo:** Reporte Formal de Estado y Roadmap de Pruebas.
-- **Fecha:** 04/11/2026.
-- **Contenido:**
-  - Diagnóstico exhaustivo del avance global (fijado estrictamente en 70%).
-  - Mapeo de la Tarea A ($A \to B \to \text{Escaneo} \to B \to A \to \text{Anuncio}$) y Tarea B (MediaPipe + Guardián LiDAR).
-  - Estrategia defensiva "Cero Colisiones" (inflado $R=26\text{ cm}$, rotación pura en frente $<32\text{ cm}$, desaceleración suave y bumper).
-  - Cobertura de pruebas unitarias (62 pass / 1 skip) y plan para el 30% restante de pruebas en pista física.
-
----
-
-## 📂 Entregables Finales (Noviembre 2026)
-- [Informe Final Técnico (`informe_final.md`)](informe_final.md): Documentación completa de todos los subsistemas en `main` (Fases 1–5, guardián de profundidad, `187 passed / 1 skipped`) con tabla lista para llenar con los tiempos de pista real.
-- [Presentación Final (`presentacion_final.html`)](presentacion_final.html): Diapositivas interactivas (navegables con `←`/`→` e imprimibles a PDF) listas para la sustentación; solo falta completar la tabla de ensayos reales y adjuntar el video.
+Informes intermedios (por ejemplo, el de avance al 70 %) están en [`docs/historial/`](../docs/historial/).

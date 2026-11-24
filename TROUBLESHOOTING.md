@@ -78,8 +78,8 @@ Hay **tres** lugares que deben coincidir:
    SSH **no** cambia el servicio `turtlebot4.service`.
 3. **Create 3**: portal `http://<IP_ROBOT>:8080` → *Application → Configuration*.
 
-Para corregir (2) y (3): [CONFIGURACION_INICIAL § 3](CONFIGURACION_INICIAL.md#3-ros_domain_id-del-robot)
-y [§ 2.1](CONFIGURACION_INICIAL.md#21-parámetros-de-red-y-ros).
+Para corregir (2) y (3): ver la [guía de conexión](docs/guia_conexion_turtlebot4.md)
+(`ROS_DOMAIN_ID` y parámetros de red).
 
 Síntoma típico de (3) desalineado: aparecen `/scan` y `/oakd/...` (que publica la Pi),
 pero **faltan** `/odom`, `/battery_state`, `/imu`, `/hazard_detection` y `/cmd_vel` no mueve
@@ -142,7 +142,7 @@ detén uno de los dos (`sudo systemctl restart turtlebot4.service` y no relances
 
 Arreglos:
 - `X_LINK_ERROR` / `Device not found`: desconecta y reconecta la OAK-D, o reinicia el servicio. Con batería baja, la cámara se reinicia sola: carga el robot.
-- Aparece en `lsusb` pero el driver no la abre (`insufficient permissions`): falta la regla udev → [CONFIGURACION_INICIAL § 5.1](CONFIGURACION_INICIAL.md#51-oak-d-no-detectada).
+- Aparece en `lsusb` pero el driver no la abre (`insufficient permissions`): falta la regla udev → [guía de conexión](docs/guia_conexion_turtlebot4.md).
 - Relanzar la cámara aislada (con el bringup detenido): `ros2 launch turtlebot4_bringup oakd.launch.py`.
 - **Paso 4 OK, paso 5 falla**: es ancho de banda de Wi-Fi, no la cámara. Usa `/compressed` en `rqt_image_view`, acércate al router o usa cable.
 
@@ -157,7 +157,7 @@ Arreglos:
 | 5 | Datos válidos | `ros2 topic echo /scan --once \| head -30` | `ranges` con valores finitos |
 
 Arreglos:
-- Sin `/dev/RPLIDAR`: falta la regla udev → [CONFIGURACION_INICIAL § 5.2](CONFIGURACION_INICIAL.md#52-rplidar-sin-devrplidar).
+- Sin `/dev/RPLIDAR`: falta la regla udev → [guía de conexión](docs/guia_conexion_turtlebot4.md).
 - `Permission denied` en `/dev/ttyUSB0`: `sudo usermod -aG dialout ubuntu`, cierra la sesión y vuelve a entrar.
 - Relanzar aislado: `ros2 launch turtlebot4_bringup rplidar.launch.py`.
 

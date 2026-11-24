@@ -20,25 +20,25 @@ En la rama `main` (`https://github.com/Tilinpro19/proyecto-vision-67`):
 
 ### A. Elección de rama al volver por un pasillo (`1_competencia/mision.py`)
 - **Problema:** En `PilotoGuiado.paso`, al decidir en un cruce solo se sumaba visita a la rama elegida (`d_elegida`), pero no a la dirección por la que venía el robot (`rumbo_pasillo + pi`). Al regresar de un callejón sin salida, la dirección de vuelta al origen seguía con `0` visitas igual que la rama sin explorar, y `decision.py` desempataba por `preferencia` a favor de `"recto"`.
-- **Solución:** Al tomar una decisión distinta de `"retroceder"`, se marca `d_origen = self._dir_cardinal(self.rumbo_pasillo + math.pi)` en `visitas_cruce` con al menos `1` visita (ver [`1_competencia/mision.py`](../1_competencia/mision.py#L690-L693)).
+- **Solución:** Al tomar una decisión distinta de `"retroceder"`, se marca `d_origen = self._dir_cardinal(self.rumbo_pasillo + math.pi)` en `visitas_cruce` con al menos `1` visita (ver [`1_competencia/mision.py`](../../1_competencia/mision.py#L690-L693)).
 
 ### B. Protección del retroceso por migas (`1_competencia/mision.py`)
 - **Problema:** Si el LiDAR detectaba un cruce intermedio mientras el robot seguía las migas de vuelta (`retrocediendo_hasta_idx`), el bloque de decisión corría antes, podaba las migas y anulaba el retroceso a mitad de camino.
 - **Solución:**
-  - Se comprueba la llegada al cruce objetivo (`dist < 0.45 m`) antes del bloque de decisión ([`1_competencia/mision.py`](../1_competencia/mision.py#L619-L633)).
+  - Se comprueba la llegada al cruce objetivo (`dist < 0.45 m`) antes del bloque de decisión ([`1_competencia/mision.py`](../../1_competencia/mision.py#L619-L633)).
   - `puede_cruce` exige `self.retrocediendo_hasta_idx is None`, ignorando cruces intermedios hasta completar el regreso al cruce anterior (manteniendo `puede_frente` como respaldo si el camino de vuelta queda bloqueado).
 
 ### C. Identidad espacial de los cruces (`1_competencia/mision.py`)
 - **Problema:** `key = (round(x), round(y))` partía un mismo cruce en dos celdas distintas si caía cerca de un borde de `0.5 m` o por drift de odometría, perdiendo el historial de visitas y ramas agotadas.
-- **Solución:** `_clave_cruce(x, y, radio=0.80)` busca el cruce ya registrado más cercano a `< 0.80 m` y lo reutiliza; solo crea una clave nueva si no hay ninguno cerca ([`1_competencia/mision.py`](../1_competencia/mision.py#L543-L550)).
+- **Solución:** `_clave_cruce(x, y, radio=0.80)` busca el cruce ya registrado más cercano a `< 0.80 m` y lo reutiliza; solo crea una clave nueva si no hay ninguno cerca ([`1_competencia/mision.py`](../../1_competencia/mision.py#L543-L550)).
 
 ### D. Margen de retroceso en escape (`1_competencia/navegacion.py`)
 - **Problema:** En `Piloto._escape` (fase `"atras"`), el robot retrocedía mientras `back_free > 0.10 m`, margen muy justo frente a obstáculos traseros durante un choque/atasco.
-- **Solución:** Se subió el umbral a `back_free > 0.20` ([`1_competencia/navegacion.py`](../1_competencia/navegacion.py#L267)).
+- **Solución:** Se subió el umbral a `back_free > 0.20` ([`1_competencia/navegacion.py`](../../1_competencia/navegacion.py#L267)).
 
 ### E. Diagnóstico `.npz` en atascos y choques (`1_competencia/mision.py`)
 - **Problema:** Con solo el `.log` y el `.json` no se podía distinguir si un `"atasco con frente libre"` tras un giro era un obstáculo bajo real o un falso positivo del detector de atasco.
-- **Solución:** `Mision.guardar_diagnostico` guarda `t`, `pose`, `ranges`, `angles` y `crumbs` en `logs/*.npz` automáticamente cuando `comunes` detecta un choque (`choque_LiDAR` / `choque_bumper`) o cuando `_volcar_eventos_piloto` recibe un evento de `"atasco"` ([`1_competencia/mision.py`](../1_competencia/mision.py#L148-L164), [`1_competencia/mision.py`](../1_competencia/mision.py#L392-L433)).
+- **Solución:** `Mision.guardar_diagnostico` guarda `t`, `pose`, `ranges`, `angles` y `crumbs` en `logs/*.npz` automáticamente cuando `comunes` detecta un choque (`choque_LiDAR` / `choque_bumper`) o cuando `_volcar_eventos_piloto` recibe un evento de `"atasco"` ([`1_competencia/mision.py`](../../1_competencia/mision.py#L148-L164), [`1_competencia/mision.py`](../../1_competencia/mision.py#L392-L433)).
 
 ### F. Guardián de profundidad OAK-D bajo demanda (`1_competencia/profundidad.py`, `1_competencia/mision.py`, `1_competencia/navegacion.py`)
 - **Problema:** Los `.npz` mostraron que los atascos con frente libre ocurrían frente a obstáculos por debajo del plano del LiDAR (bases/patas de sillas), pero suscribirse permanentemente a `/oakd/stereo/image_raw` cuesta ~37% de un núcleo por transporte DDS.
@@ -56,7 +56,7 @@ En la rama `main` (`https://github.com/Tilinpro19/proyecto-vision-67`):
 ## 3. Verificación (WSL y Raspberry Pi)
 
 - **Tests en WSL** (`1_competencia/`):
-  - `pytest -q` → **187 passed, 1 skipped**, incluyendo los tests de [`1_competencia/tests/test_mision_guiada.py`](../1_competencia/tests/test_mision_guiada.py) y [`1_competencia/tests/test_profundidad.py`](../1_competencia/tests/test_profundidad.py).
+  - `pytest -q` → **187 passed, 1 skipped**, incluyendo los tests de [`1_competencia/tests/test_mision_guiada.py`](../../1_competencia/tests/test_mision_guiada.py) y [`1_competencia/tests/test_profundidad.py`](../../1_competencia/tests/test_profundidad.py).
 - **Despliegue en la Pi (`ubuntu@192.168.185.3:~/mision_mov/`)**:
   - Backups en `~/mision_mov/bak/`.
   - Archivos actualizados en la Pi (`mision.py`, `navegacion.py`, `nav_core.py`, `profundidad.py`).

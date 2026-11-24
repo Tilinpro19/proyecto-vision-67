@@ -6,29 +6,33 @@ Repositorio oficial del proyecto de robótica móvil autónoma y visión computa
 - **Plataforma:** TurtleBot 4 Lite (Base iRobot Create 3 + RPLIDAR A1 + Cámara OAK-D Lite + Raspberry Pi 4 Model B de 4 GB)
 - **Sistema Operativo & Middleware:** Ubuntu 24.04 LTS, ROS 2 Jazzy Jalisco, Fast DDS (perfil unicast/estático)
 - **Fecha de Competencia Final:** 22 de Noviembre de 2026
-- **Resultados de Validación:** 62/62 pruebas unitarias aprobadas (100% pass) · Validación cinemática en simulación y despliegue a bordo (*edge execution*) listo en el robot.
+- **Resultados de Validación:** 336/336 pruebas automatizadas aprobadas (100% pass) · Validación cinemática, de señales, visión facial y gestos en simulación, y despliegue a bordo (*edge execution*) listo en el robot.
 
 ---
 
 ## 👥 Equipo de Proyecto
 - **Líder / Integrante:** Mando ([@Tilinpro19](https://github.com/Tilinpro19))
-- **Colaboradores:** Invitaciones de acceso al repositorio en [Settings / Access](https://github.com/Tilinpro19/proyecto-vision-67/settings/access).
 
 ---
 
-## 📍 1. Dónde Quedó el Proyecto (Punto de Partida para el Equipo)
+## 📍 1. Estado del Proyecto
 
-Todo el trabajo algorítmico, arquitectónico y de despliegue ya fue implementado y verificado. Aquí está el estado exacto de cada módulo para que el equipo continúe sin fricción:
+| Componente | Qué hace | Cómo probarlo |
+|---|---|---|
+| **Coordinador de Misión (`mision.py`)** | Máquina de estados `ESPERA → IR_A_B → ESCANEAR → VOLVER_A_A → ANUNCIAR → FIN`, cronómetro, parada de emergencia y modos `directo` (por defecto), `guiado` y `goal`. | `tests/test_mision*.py` y `./tarea_a.sh` |
+| **Modo directo (`directo.py`)** | Sigue el pasillo centrado, obedece flechas confirmadas girando 90° en el sitio, decide con el LiDAR en esquinas sin flecha y regresa deshaciendo los tramos. | `tests/test_directo.py`, `tests/bench_directo.py` |
+| **Señales por forma (`senales_forma.py`, `senales.py`)** | Flechas, prohibido, bandera de cuadros y códigos QR en blanco y negro (y flechas a color), robusto a perspectiva, luz e impresión en gris. | `tests/test_senales*.py` |
+| **Pasillo y decisión (`pasillo.py`, `decision.py`, `explorar.py`)** | Clasifica la topología local (pasillo, L, T, cruz, callejón) y decide señal > LiDAR > exploración. | `tests/test_pasillo.py`, `tests/test_decision.py` |
+| **Evasión reactiva (`nav_core.py`, `navegacion.py`, `profundidad.py`)** | VFH-lite, `SpatialKDTree2D`, `BreadcrumbGraph` con poda de callejones, retorno con ICP 2D y guardián de profundidad OAK-D bajo demanda. | `tests/test_nav_core.py` y `2_laboratorio/robot_simulado.py` |
+| **Reconocimiento facial (`facial.py`)** | YuNet + SFace (ONNX offline), filtro de nitidez y anuncio por voz y en `/nombre_reconocido`. | `python3 facial.py --probar` |
+| **Tarea B por gestos (`gestos_teleop.py`, `mano_teleop.py`)** | MediaPipe HandLandmarker, armado/parado por gestos sin teclado y guardián LiDAR. | `tests/test_gestos.py`, `./tarea_b.sh` |
+| **Reloj Create 3 ↔ Pi** | Corrige el desfase sin internet vía `POST /api/restart-ntpd` y servicio persistente. | `scripts/chequeo_reloj_tb4.py` |
+| **Despliegue a bordo** | `desplegar_en_robot.sh` sincroniza el código a la Pi; los lanzadores `*_onboard.sh` no dependen del Wi-Fi. | `make deploy IP=<ip>` |
+| **Docker** | ROS 2 Jazzy + OpenCV + MediaPipe en [`tb4_docker/`](tb4_docker/), sin instalar ROS 2 en la PC. | `make docker-run` |
 
-| Componente | Estado Actual | Dónde Probarlo | Qué Falta para el Día Final |
-|---|---|---|---|
-| **Evasión Reactiva (`nav_core.py` + `navegacion.py`)** | ✅ 100% implementado (VFH-lite, cinemática suave, `SpatialKDTree2D`, `BreadcrumbGraph` con poda de callejones y retorno ICP 2D). | `pytest 1_competencia/tests` y `robot_simulado.py`. | Realizar ensayo físico en la pista del lab con obstáculos reales. |
-| **Coordinador de Misión (`mision.py`)** | ✅ Máquina de estados completa (`ESPERA → IR_A_B → ESCANEAR → VOLVER_A_A → ANUNCIAR → FIN`), cronómetro y métricas de puntaje. | `tests/test_mision.py` y `tarea_a.sh`. | Validar detección de llegada al punto $B$ según criterio del docente. |
-| **Reconocimiento Facial (`facial.py`)** | ✅ YuNet (detección) + SFace (embeddings) en ONNX offline con filtro de nitidez por Laplaciano y anuncio por voz. | `python3 facial.py --probar` | Cargar las fotos de las personas en `galeria/` cuando se revelen. |
-| **Control Gestual Tarea B (`gestos_teleop.py`)** | ✅ Clasificador de manos MediaPipe con evaluación angular por articulaciones MCP, armado/parado por gestos sin teclado. | `python3 gestos_teleop.py --laptop` | Ensayar con la persona que hará los gestos frente a la cámara. |
-| **Sincronización Create 3 ↔ Pi** | ✅ Resuelto el desfase de 20.9 horas mediante sincronización directa HTTP API (`POST /api/restart-ntpd`) y scripts persistentes. | `scripts/chequeo_reloj_tb4.py` | Ejecutar al encender el robot en cada sesión de laboratorio. |
-| **Despliegue On-Board (*Edge Execution*)** | ✅ Scripts y lanzadores a bordo (`tarea_a_onboard.sh`) instalados en la Pi; elimina la latencia de red y es inmune a caídas de Wi-Fi. | `desplegar_en_robot.sh` | Usar preferentemente en los intentos puntuados de la competencia. |
-| **Dockerización Completa** | ✅ Entorno listo con Dockerfile y docker-compose en [`tb4_docker/`](tb4_docker/); monta el repo y no requiere instalar ROS 2 en la PC. | `docker compose run --rm tb4` | Listo para usar si alguien del equipo no tiene ROS 2 configurado. |
+> [!NOTE]
+> Las fotos de la galería facial **no están en el repositorio** (son de personas reales). Para
+> probar el reconocimiento, carga tus propias fotos siguiendo [`1_competencia/galeria/README.md`](1_competencia/galeria/README.md).
 
 ---
 
@@ -78,13 +82,13 @@ Si prefieres no instalar ROS 2 Jazzy ni paquetes en tu sistema, usa el contenedo
 
 ---
 
-### Nivel 1: Verificación de Pruebas Unitarias (Sin Robot)
-Ejecuta la suite completa de 62 pruebas unitarias automatizadas:
+### Nivel 1: Verificación de Pruebas Automatizadas (Sin Robot)
+Ejecuta la suite completa de 336 pruebas automatizadas:
 ```bash
 cd ~/proyecto-vision-67
 python3 -m pytest 1_competencia/tests -v
 ```
-> **Resultado esperado:** `62 passed in ~10s`. Valida el inflado geométrico de obstáculos, cinemática continua, búsqueda en KD-Tree, poda de ramas en callejones, reconocimiento facial y corrección ICP.
+> **Resultado esperado:** `336 passed`. Valida el modo directo, detección de señales por forma y color, pasillos y decisión, inflado geométrico, VFH-lite, KD-Tree, poda de callejones, reconocimiento facial, gestos y corrección ICP.
 
 ---
 
@@ -303,74 +307,54 @@ El análisis experimental detallado se encuentra en [`entregables/informe_arquit
 
 ---
 
-## 📂 5. Estructura Completa del Repositorio
+## 📂 5. Estructura del Repositorio
 
 ```text
 proyecto-vision-67/
-├── README.md                           # Portada, guía paso a paso, arquitectura y comparativa
-├── HANDOFF_PROYECTO_FINAL.md           # Guía rápida de traspaso operacional
-├── DESCUBRIMIENTOS.md                  # Bitácora de trampas de hardware, reloj y DDS
-├── TROUBLESHOOTING.md                  # Solución rápida a fallos de conexión y sensores
-├── Makefile                            # Atajos para WSL/Ubuntu (test, sim, check, deploy, stop)
-├── requirements.txt                    # Dependencias Python de desarrollo
-├── desplegar_en_robot.sh               # Script maestro para sincronizar código a la Pi por rsync
-├── tb4_connect.sh                      # Configura FastDDS, dominio y sincroniza hora (--hora)
-├── tb4_check.sh                        # Diagnóstico en vivo de tópicos, frecuencias y reloj
-├── fastdds_pc.xml                      # Perfil Fast DDS de 100 participantes (evita tópicos ocultos)
-├── parar.sh                            # Freno de emergencia inmediato
+├── README.md                    # Portada, guía paso a paso, arquitectura y comparativa
+├── DESCUBRIMIENTOS.md           # Trampas de hardware, reloj y DDS encontradas en el lab
+├── TROUBLESHOOTING.md           # Solución rápida a fallos de conexión y sensores
+├── Makefile                     # Atajos (test, sim, check, clock, deploy, stop, docker-*)
+├── requirements.txt             # Dependencias Python de desarrollo
+├── desplegar_en_robot.sh        # Sincroniza el código a la Raspberry Pi por rsync
+├── tb4_connect.sh               # Configura Fast DDS, dominio y sincroniza hora (--hora)
+├── tb4_check.sh                 # Diagnóstico en vivo de tópicos, frecuencias y reloj
+├── fastdds_pc.xml               # Perfil Fast DDS para ver todos los tópicos en unicast
+├── parar.sh                     # Freno de emergencia inmediato
 │
-├── scripts/                            # Herramientas de diagnóstico y sincronización de reloj
-│   ├── chequeo_reloj_tb4.py            # Compara marcas temporales /scan vs /odom
-│   ├── diagnostico_tb4.py              # Diagnóstico integral de hardware y red desde la PC
-│   ├── diag_robot.sh                   # Diagnóstico integral a bordo de la Raspberry Pi
-│   ├── configurar_sync_automatico.sh   # Configura SSH + sudo sin clave para sincronizar hora
-│   └── instalar_hora_persistente.sh    # Servicio en la Pi para restaurar hora tras apagón
+├── 1_competencia/               # Código de las tareas evaluadas
+│   ├── mision.py                # Coordinador A→B→A, cronómetro y modos (directo/guiado/goal)
+│   ├── directo.py               # Modo directo: de flecha en flecha por el pasillo
+│   ├── senales_forma.py         # Detector de señales por forma (flechas, prohibido, bandera, QR)
+│   ├── senales.py               # Lectura de QR y señales a color
+│   ├── pasillo.py · decision.py · explorar.py   # Topología local, política de decisión y exploración
+│   ├── nav_core.py · navegacion.py              # VFH-lite, KD-Tree, migas e ICP 2D
+│   ├── profundidad.py           # Guardián de profundidad OAK-D bajo demanda
+│   ├── facial.py                # Reconocimiento facial (YuNet + SFace) y anuncio por voz
+│   ├── gestos_teleop.py · mano_teleop.py        # Tarea B: teleoperación por gestos (MediaPipe)
+│   ├── probar_*_teleop.py · reconocer_robot.py  # Pruebas manuales de visión con el robot
+│   ├── tarea_a.sh · tarea_b.sh · competencia.sh # Lanzadores desde la laptop
+│   ├── *_onboard.sh             # Lanzadores a bordo de la Pi
+│   ├── config*.json             # Parámetros (base, rápido y agresivo)
+│   ├── modelos/                 # Modelos offline (YuNet, SFace, hand_landmarker, plantillas)
+│   ├── galeria/                 # Fotos de rostros (locales, no versionadas)
+│   └── tests/                   # Pruebas automatizadas, simulador y bancos de velocidad
 │
-├── 1_competencia/                      # Código fuente de las tareas evaluadas
-│   ├── nav_core.py                     # Algoritmo matemático puro VFH-lite, KDTree, ICP y rampas
-│   ├── navegacion.py                   # Nodo ROS 2 de navegación y evasión reactiva
-│   ├── mision.py                       # Coordinador de misión A->B->A y cronómetro
-│   ├── facial.py                       # Reconocimiento facial (YuNet + SFace) y sintetizador
-│   ├── gestos_teleop.py                # Teleoperación por gestos de mano con MediaPipe (Tarea B)
-│   ├── tarea_a.sh                      # Lanzador Tarea A desde laptop
-│   ├── tarea_a_onboard.sh              # Lanzador Tarea A a bordo de la Pi (Edge)
-│   ├── tarea_b.sh                      # Lanzador Tarea B (gestos)
-│   ├── capturar_persona.sh             # Script rápido para cargar fotos a la galería
-│   ├── config.json                     # Parámetros cinemáticos y de seguridad
-│   ├── modelos/                        # Modelos offline (YuNet, SFace y hand_landmarker.task)
-│   ├── galeria/                        # Base de datos de rostros conocidos
-│   └── tests/                          # Suite de pruebas unitarias automatizadas
+├── 2_laboratorio/               # Simulador 2D, calibración, teleop y visores de sensores
+├── 3_referencia/                # Prototipos y diseños previos (modo sígueme, fusión de sensores)
+├── scripts/                     # Diagnóstico y sincronización de reloj
+├── tb4_docker/                  # Imagen Docker con ROS 2 Jazzy y la librería tb4lib
 │
-├── 2_laboratorio/                      # Herramientas de laboratorio y simulación
-│   ├── robot_simulado.py               # Simulador 2D de Create 3 + LiDAR con interfaz gráfica
-│   ├── calibrar.py                     # Optimización automática de parámetros (tiempo vs choque)
-│   └── teleop_wasd.py                  # Control manual por teclado para pruebas
+├── docs/                        # Documentación técnica y guías
+│   ├── arquitectura_sistema.md · arquitectura_pipeline_caras.md
+│   ├── metodos_y_justificacion.md · informe_velocidad_directo.md
+│   ├── plan_mision_guiada.md    # Diseño de la Tarea A guiada por señales
+│   ├── guia_*.md · manual_operacion_laboratorio.md · tarjeta_offline_lab.md
+│   ├── lineamientos_competencia.md · mando.md · resolucion_problemas_tecnicos.md
+│   ├── diagramas/               # FSM de la misión (HTML interactivo)
+│   └── historial/               # Informes intermedios y notas de traspaso
 │
-├── 3_referencia/                       # Scripts de referencia y prototipos
-│   └── sigueme.py                      # Modo sígueme por LiDAR y cámara
-│
-├── tb4_docker/                         # ENTORNO DOCKER LISTO PARA USAR
-│   ├── Dockerfile                      # Imagen con ROS 2 Jazzy, OpenCV, MediaPipe y tb4lib
-│   ├── docker-compose.yml              # Configuración de red host, dispositivos y volumen /ws
-│   └── tb4lib/                         # Librería Python de alto nivel para el Create 3
-│
-├── docs/                               # Documentación complementaria y manuales
-│   ├── arquitectura_sistema.md         # Diagrama detallado de software
-│   ├── metodos_y_justificacion.md      # Métodos implementados y justificación técnica
-│   ├── guia_acceso_y_conexion_robot.md # Guía de redes y conexión física
-│   ├── guia_conexion_turtlebot4.md     # Guía rápida de conexión y red del laboratorio
-│   ├── guia_entorno_desarrollo_y_simulacion.md # Configuración de WSL y simulador
-│   ├── lineamientos_competencia.md     # Reglas y fórmulas de evaluación
-│   ├── mando.md                        # Emparejamiento de mando PS4/PS5 en la Pi
-│   ├── resolucion_problemas_tecnicos.md # Detalle de soluciones a cuellos de botella
-│   └── tarjeta_offline_lab.md          # Referencia rápida sin internet en el laboratorio
-│
-├── bitacora/                           # Bitácora semanal de avance
-│   ├── semana-01.md                    # Semana 1: Estructura inicial
-│   ├── semana-02.md                    # Semana 2: Sincronización de reloj, cinemática y edge
-│   └── semana-03.md                    # Semana 3: Cero colisiones, misión completa y gestos
-│
-└── entregables/                        # Informes formales del curso
-    ├── informe_arquitectura_navegacion.md  # Informe técnico comparativo vs SLAM
-    └── informe_estado_proyecto_70.md       # Informe de avance al 70%
+├── bitacora/                    # Bitácora semanal de avance
+├── evidencias/                  # Registro de evidencias de laboratorio
+└── entregables/                 # Informe final, informe LaTeX y presentación
 ```

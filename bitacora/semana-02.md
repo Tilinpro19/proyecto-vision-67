@@ -40,7 +40,7 @@ Se agregaron pruebas unitarias dedicadas en `1_competencia/tests/test_nav_core.p
 
 Para solucionar la dependencia de Wi-Fi y garantizar latencia de 0 ms en la navegación reactiva, se crearon e integraron los scripts de despliegue y ejecución a bordo:
 
-### Script de Despliegue Maestro [`desplegar_en_robot.sh`](file:///C:/Users/mando/turtleclaude4/desplegar_en_robot.sh)
+### Script de Despliegue Maestro [`desplegar_en_robot.sh`](../desplegar_en_robot.sh)
 1. **Comprobación de Red:** Verifica la conexión Ethernet con el robot (`192.168.185.3`, ping $< 1\text{ ms}$).
 2. **Sincronización `rsync`:** Transfiere el código optimizado de `proyecto_final` y la librería `tb4lib` a `~/turtleclaude4/` en la Raspberry Pi.
 3. **Instalación de Librería:** Instala `tb4lib` en modo editable en el entorno Python de la Raspberry Pi.

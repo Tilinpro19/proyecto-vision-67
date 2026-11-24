@@ -57,7 +57,7 @@ class MisionParams:
     home_tol_b: float = 0.35      # m   Tarea B: anuncio automatico cerca de A
     cuenta: float = 0.0           # s   espera antes de salir de A
     rate: float = 10.0            # Hz  ciclo de control
-    # Supuestos configurables para Tarea A guiada por senales (Seccion 7 de PLAN_ANTIGRAVITY.md)
+    # Supuestos configurables para Tarea A guiada por senales (Seccion 7 de docs/plan_mision_guiada.md)
     senal_prohibido: str = "buscar_otro"  # buscar_otro | retroceder
     senal_bandera: str = "llegada_b"      # llegada_b | ignorar
     senal_qr: str = "registrar"           # registrar | ignorar

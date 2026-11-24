@@ -49,4 +49,4 @@ timeline
 ### 5. Calidad y Validación de Código
 - **62 Pruebas Unitarias Aprobadas (100% de éxito en ~7.5 s):** Cubren toda la geometría de evasión, estructuras de datos, visión, cinemática y misiones simuladas de punta a punta.
 - **Simulador 2D en Laboratorio:** Herramienta interactiva (`robot_simulado.py`) para probar circuitos de cualquier forma geométrica sin arriesgar el robot físico.
-- **Despliegue a Bordo (*Edge Execution*):** Script de sincronización e instalación automática [`desplegar_en_robot.sh`](file:///C:/Users/mando/turtleclaude4/desplegar_en_robot.sh) y lanzadores locales `tarea_a_onboard.sh` y `tarea_b_onboard.sh`.
+- **Despliegue a Bordo (*Edge Execution*):** Script de sincronización e instalación automática [`desplegar_en_robot.sh`](../../desplegar_en_robot.sh) y lanzadores locales `tarea_a_onboard.sh` y `tarea_b_onboard.sh`.

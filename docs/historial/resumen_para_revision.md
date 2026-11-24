@@ -34,18 +34,18 @@
 
 ## 3. Cambios ya aplicados al código
 
-* **[1_competencia/nav_core.py](../1_competencia/nav_core.py):**
+* **[1_competencia/nav_core.py](../../1_competencia/nav_core.py):**
   * `VirtualObstacles` ahora guarda `times` por punto (con `t=None` opcional para compatibilidad), añade `prune_expired(t, ttl)` y `clear_near(xy, radius)`.
-* **[1_competencia/navegacion.py](../1_competencia/navegacion.py):**
+* **[1_competencia/navegacion.py](../../1_competencia/navegacion.py):**
   * `PilotoParams.virtual_ttl = 45.0`.
   * `_iniciar_escape()`: si ocurren **2+ atascos seguidos dentro de 0.40 m**, limpia barreras virtuales en radio `0.45 m` en lugar de apilar más; reduce `half_width` a `robot_radius` y evita añadir barrera si ya estaba detenido por frente bloqueado.
   * `_escape()`: evalúa `back_free` con el **LiDAR real** `(r, a)`, y hace *fallback* a `(r, a)` para elegir rumbo si `R, A` está bloqueado en todas direcciones (`max(free) < 0.15`).
-* **[1_competencia/explorar.py](../1_competencia/explorar.py):**
+* **[1_competencia/explorar.py](../../1_competencia/explorar.py):**
   * `Mapa.actualizar()` ahora aplica clamping `[L_MIN, L_MAX]` (`[-3.0, 3.0]`).
   * `_planear()` inyecta `piloto.virtual.points` como celdas ocupadas antes de correr Dijkstra.
   * Suscripción a `/battery_state`: si `percentage < 0.15` en modo `--mover`, dispara `exp.terminar("bateria baja")` para volver a `A`.
   * Flag `--mapa-vivo`: actualiza `logs/mapa_vivo.png` cada `2 s`.
-* **[1_competencia/tests/test_navegacion.py](../1_competencia/tests/test_navegacion.py):**
+* **[1_competencia/tests/test_navegacion.py](../../1_competencia/tests/test_navegacion.py):**
   * Añadidos `test_virtual_obstacles_ttl_y_limpieza` y `test_escape_no_queda_en_jaula_virtual`.
 
 ### Verificación ejecutada hasta ahora
