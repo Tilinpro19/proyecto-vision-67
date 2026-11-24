@@ -1366,13 +1366,13 @@ def tarea_b(args, s, m):
     import cv2
 
     from comun import LIMIT_ANGULAR, LIMIT_LINEAR, clamp
-    from gestos_teleop import Gestos, comando, draw_hud
+    from gestos_teleop import Gestos, comando, draw_hud, params_desde_args
     from mano_teleop import PANEL_H, fit_height, robot_panel
 
     mp, nav = s.mp, nc.NavParams()
     max_l, max_a = clamp(args.lineal, 0, LIMIT_LINEAR), clamp(args.angular, 0, LIMIT_ANGULAR)
     cont = ContadorChoques(mp.choque_dist)
-    gestos = Gestos(args.cam, args.clahe)
+    gestos = Gestos(args.cam, args.clahe, params=params_desde_args(args))  # default: original
     win = "Tarea B"
     origen, escaneo, moving = None, None, False
     m.evento("palma abierta 1 s para armar y salir")
